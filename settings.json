@@ -6,7 +6,7 @@
     "chunkSizeMaxWords": 300,
     "embeddingDimensions": 256,
     "embeddingBackend": "ml",
-    "embeddingModel": "sentence-transformers/all-MiniLM-L6-v2",
+    "embeddingModel": "jinaai/jina-embeddings-v2-base-code",
     "embeddingFallbackBackend": "hash",
     "ftsCandidateCount": 12,
     "vectorCandidateCount": 20,
@@ -14,6 +14,8 @@
     "bm25Enabled": true,
     "annEngine": "hnsw",
     "annEfSearch": 160,
+    "annEfConstruction": 200,
+    "annM": 16,
     "minFinalContexts": 3,
     "maxFinalContexts": 5,
     "compressionWordBudget": 350,
@@ -25,6 +27,45 @@
     "historyCompactReminderTurns": [12, 20, 28, 36],
     "preferFtsFirst": true,
     "vectorFallbackMinFtsHits": 3,
-    "context7Optional": true
+    "context7Optional": true,
+    "maxFileSizeBytes": 524288,
+    "hardTruncateWords": 1500,
+    "hardBlockWords": 3000,
+    "astChunkingEnabled": true,
+    "hashEmbeddingSkipVector": true,
+    "semanticClusteringEnabled": true,
+    "semanticClusterCount": 5,
+    "textRankEnabled": true,
+    "textRankDamping": 0.85,
+    "textRankIterations": 30,
+
+    "lspFeatures": {
+      "importGraphEnabled": true,
+      "twoHopExpansionEnabled": true,
+      "twoHopMaxExpansions": 5,
+      "importedContextLimit": 2,
+      "symbolIndexEnabled": true,
+      "diffProtocolEnabled": true
+    },
+
+    "scoringWeights": {
+      "ftsLexicalRankWeight": 0.35,
+      "ftsBm25Weight": 0.65,
+      "finalFtsWeight": 0.50,
+      "finalVectorWeight": 0.35,
+      "finalOverlapWeight": 0.15,
+      "sentenceLengthBonusWeight": 0.10,
+      "sentenceLengthNormalizer": 24.0,
+      "charNgramWeight": 0.35,
+      "textRankWeight": 0.50,
+      "queryRelevanceWeight": 0.35,
+      "importedFileBoost": 1.25
+    },
+
+    "embeddingCache": {
+      "maxSize": 10000,
+      "ttlSeconds": 86400,
+      "strategy": "lru"
+    }
   }
 }

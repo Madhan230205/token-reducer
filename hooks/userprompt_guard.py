@@ -17,7 +17,12 @@ from typing import Any
 
 MAX_PROMPT_WORDS = 900
 MAX_PROMPT_LINES = 120
+HARD_TRUNCATE_WORDS = 1500
+HARD_BLOCK_WORDS = 3000
 REMINDER_TURNS = {12, 20, 28, 36}
+AUTO_COMPACT_TURN = 25       # Strongly urge /compact at this turn
+AUTO_RESET_TURN = 40         # Force-inject reset recommendation at this turn
+CRITICAL_RESET_TURN = 50     # Hard warning: session is dangerously long
 
 
 def estimate_tokens(text: str) -> int:
@@ -101,29 +106,72 @@ def main() -> int:
         pass
 
     messages: list[str] = []
+    result: dict[str, Any] = {}
+
     if prompt:
         word_count = len(prompt.split())
         line_count = prompt.count("\n") + 1
         has_compact_packet = "CONTEXT_PACKET_START" in prompt
         has_token_reducer_intent = "/token-reducer" in prompt or "token-reducer" in prompt.lower()
+        bypass = has_compact_packet or has_token_reducer_intent
 
-        if (
-            (word_count > MAX_PROMPT_WORDS or line_count > MAX_PROMPT_LINES)
-            and not has_compact_packet
-            and not has_token_reducer_intent
-        ):
+        if not bypass and word_count > HARD_BLOCK_WORDS:
+            # Hard block: reject the prompt entirely
+            messages.append(
+                f"🚫 Prompt BLOCKED: {word_count} words (~{estimate_tokens(prompt)} tokens) exceeds the "
+                f"{HARD_BLOCK_WORDS}-word hard limit. Reduce your prompt size or pass large content "
+                "via --inputs and run /token-reducer instead. Prompt was not submitted."
+            )
+            result["rejectInput"] = True
+            result["systemMessage"] = "\n\n".join(messages)
+            print(json.dumps(result), file=sys.stdout)
+            return 0
+
+        if not bypass and word_count > HARD_TRUNCATE_WORDS:
+            # Hard truncate: cut to limit and warn
+            truncated_words = prompt.split()[:HARD_TRUNCATE_WORDS]
+            truncated_prompt = " ".join(truncated_words)
+            dropped = word_count - HARD_TRUNCATE_WORDS
+            messages.append(
+                f"✂️ Prompt TRUNCATED: {word_count} words exceeded the {HARD_TRUNCATE_WORDS}-word "
+                f"soft limit. Last {dropped} words were dropped (~{estimate_tokens(' '.join(prompt.split()[HARD_TRUNCATE_WORDS:]))} tokens saved). "
+                "Pass large content via --inputs and run /token-reducer for better results."
+            )
+            result["transformedPrompt"] = truncated_prompt
+
+        elif not bypass and (word_count > MAX_PROMPT_WORDS or line_count > MAX_PROMPT_LINES):
             messages.append(
                 "⚠️ Large raw prompt detected. This may bypass token reduction and burn tokens. "
                 "Prefer: keep prompt short, pass files/logs as inputs, then run /token-reducer first. "
                 f"(approx_tokens={estimate_tokens(prompt)})"
             )
 
-    if turns in REMINDER_TURNS:
+    if turns >= CRITICAL_RESET_TURN and turns % 10 == 0:
+        messages.append(
+            f"🚨 CRITICAL: Session has reached {turns} turns. Context window is likely near capacity. "
+            "Token efficiency is severely degraded. START A NEW CHAT NOW to restore full token savings. "
+            "Run /compact first to preserve important context, then begin a fresh session."
+        )
+    elif turns >= AUTO_RESET_TURN and turns % 5 == 0:
+        messages.append(
+            f"🔄 AUTO-RESET RECOMMENDED: Session has reached {turns} turns. Chat history is consuming "
+            "significant tokens and reducing the effectiveness of token-reducer. "
+            "Strongly recommended: run /compact now, then start a fresh chat session."
+        )
+    elif turns == AUTO_COMPACT_TURN:
+        messages.append(
+            "📦 AUTO-COMPACT SUGGESTED: You've reached 25 turns. Run /compact now to compress "
+            "conversation history and reclaim context window space. This keeps token-reducer effective."
+        )
+    elif turns in REMINDER_TURNS:
         messages.append(
             "🧹 Session hygiene reminder: context history is growing. Run /compact at milestones and start a fresh chat when switching major tasks."
         )
 
-    print(json.dumps({"systemMessage": "\n\n".join(messages)}) if messages else json.dumps({}), file=sys.stdout)
+    if messages:
+        result["systemMessage"] = "\n\n".join(messages)
+
+    print(json.dumps(result) if result else json.dumps({}), file=sys.stdout)
     return 0
 
 

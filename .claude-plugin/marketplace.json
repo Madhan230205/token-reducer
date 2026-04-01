@@ -12,7 +12,7 @@
     {
       "name": "token-reducer",
       "version": "1.0.0",
-      "source": ".",
+      "source": "./",
       "description": "Local-first token reduction plugin for Claude Code with BM25 + hybrid retrieval and compressed context packets"
     }
   ]

@@ -4,3 +4,16 @@
 sentence-transformers>=3.0.0
 numpy>=1.26.0
 hnswlib>=0.8.0
+faiss-cpu>=1.8.0
+
+# Tree-sitter for AST-based code chunking (semantic code boundaries)
+tree-sitter>=0.21.0
+tree-sitter-python>=0.21.0
+tree-sitter-javascript>=0.21.0
+tree-sitter-typescript>=0.21.0
+tree-sitter-java>=0.21.0
+tree-sitter-go>=0.21.0
+tree-sitter-rust>=0.21.0
+tree-sitter-c>=0.21.0
+tree-sitter-cpp>=0.21.0
+tree-sitter-ruby>=0.21.0

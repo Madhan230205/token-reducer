@@ -39,7 +39,7 @@ DEFAULT_WORD_BUDGET = 350
 DEFAULT_HYBRID_MODE = "fallback"
 DEFAULT_RETRIEVAL_MODE = "compact"
 DEFAULT_EMBEDDING_BACKEND = "ml"
-DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+DEFAULT_EMBEDDING_MODEL = "jinaai/jina-embeddings-v2-base-code"
 DEFAULT_ANN_ENGINE = "hnsw"
 DEFAULT_ANN_EF_SEARCH = 160
 DEFAULT_QUERY_CACHE_TTL_SECONDS = 900
@@ -50,8 +50,63 @@ MAX_QUERY_WORDS = 500
 MAX_QUERY_LINES = 80
 MAX_COMPRESSED_TO_SELECTED_RATIO = 0.60
 
+# Scoring weights - configurable via settings.json -> scoringWeights
+# These defaults can be overridden at runtime
+DEFAULT_SCORING_WEIGHTS = {
+    "fts_lexical_rank_weight": 0.35,
+    "fts_bm25_weight": 0.65,
+    "final_fts_weight": 0.50,
+    "final_vector_weight": 0.35,
+    "final_overlap_weight": 0.15,
+    "sentence_length_bonus_weight": 0.10,
+    "sentence_length_normalizer": 24.0,
+    "char_ngram_weight": 0.35,
+    "textrank_weight": 0.50,
+    "query_relevance_weight": 0.35,
+}
+
+# When hash embeddings are used, skip vector retrieval entirely since
+# hash embeddings provide lexical similarity (redundant with FTS5/BM25)
+DEFAULT_HASH_EMBEDDING_SKIP_VECTOR = True
+
 _EMBEDDING_MODEL_CACHE: dict[str, object] = {}
 _EMBEDDING_VECTOR_CACHE: dict[str, list[float]] = {}
+_SCORING_WEIGHTS: dict[str, float] = DEFAULT_SCORING_WEIGHTS.copy()
+_HASH_EMBEDDING_SKIP_VECTOR: bool = DEFAULT_HASH_EMBEDDING_SKIP_VECTOR
+
+
+def configure_scoring_weights(weights: dict[str, float] | None = None) -> None:
+    """Update scoring weights from external configuration."""
+    global _SCORING_WEIGHTS
+    if weights:
+        for key, value in weights.items():
+            # Convert camelCase keys from JSON to snake_case
+            snake_key = _camel_to_snake(key)
+            if snake_key in DEFAULT_SCORING_WEIGHTS:
+                _SCORING_WEIGHTS[snake_key] = float(value)
+
+
+def configure_hash_skip_vector(skip: bool) -> None:
+    """Configure whether to skip vector retrieval when using hash embeddings."""
+    global _HASH_EMBEDDING_SKIP_VECTOR
+    _HASH_EMBEDDING_SKIP_VECTOR = skip
+
+
+def _camel_to_snake(name: str) -> str:
+    """Convert camelCase to snake_case."""
+    import re
+    s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
+
+
+def get_weight(key: str) -> float:
+    """Get a scoring weight by key."""
+    return _SCORING_WEIGHTS.get(key, DEFAULT_SCORING_WEIGHTS.get(key, 0.0))
+
+
+def should_skip_vector_for_hash() -> bool:
+    """Check if vector retrieval should be skipped when using hash embeddings."""
+    return _HASH_EMBEDDING_SKIP_VECTOR
 
 TEXT_EXTENSIONS = {
     ".md",
@@ -88,6 +143,563 @@ TEXT_EXTENSIONS = {
     ".scss",
     ".env",
 }
+
+CODE_EXTENSIONS = {
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".kt", ".go", ".rs",
+    ".c", ".h", ".cpp", ".cs", ".php", ".rb", ".swift", ".sh", ".ps1",
+}
+
+IGNORED_FILENAMES = {
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "composer.lock",
+    "Gemfile.lock",
+    "Cargo.lock",
+    "poetry.lock",
+    "Pipfile.lock",
+    "bun.lockb",
+    "shrinkwrap.json",
+    "npm-shrinkwrap.json",
+}
+
+# Import graph extraction patterns
+_IMPORT_PATTERNS: dict[str, re.Pattern[str]] = {
+    ".py": re.compile(
+        r"^(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))", re.MULTILINE
+    ),
+    ".js": re.compile(
+        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))", re.MULTILINE
+    ),
+    ".ts": re.compile(
+        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))", re.MULTILINE
+    ),
+    ".tsx": re.compile(
+        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))", re.MULTILINE
+    ),
+    ".jsx": re.compile(
+        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))", re.MULTILINE
+    ),
+    ".go": re.compile(r'import\s+(?:\(\s*)?["\']([^"\']+)["\']', re.MULTILINE),
+    ".rs": re.compile(r"(?:use\s+([\w:]+)|mod\s+(\w+))", re.MULTILINE),
+    ".java": re.compile(r"import\s+([\w.]+);", re.MULTILINE),
+    ".c": re.compile(r'#include\s*[<"]([^>"]+)[>"]', re.MULTILINE),
+    ".h": re.compile(r'#include\s*[<"]([^>"]+)[>"]', re.MULTILINE),
+    ".cpp": re.compile(r'#include\s*[<"]([^>"]+)[>"]', re.MULTILINE),
+    ".rb": re.compile(r"(?:require\s+['\"]([^'\"]+)['\"]|require_relative\s+['\"]([^'\"]+)['\"])", re.MULTILINE),
+}
+
+# Function call extraction pattern (language-agnostic)
+_FUNCTION_CALL_PATTERN = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", re.MULTILINE)
+
+
+def extract_imports(text: str, source: str) -> list[str]:
+    """Extract import/require statements from source code."""
+    ext = Path(source).suffix.lower()
+    pattern = _IMPORT_PATTERNS.get(ext)
+    if pattern is None:
+        return []
+    
+    imports: list[str] = []
+    for match in pattern.finditer(text):
+        for group in match.groups():
+            if group:
+                imports.append(group.strip())
+    return imports
+
+
+def extract_function_calls(text: str) -> list[str]:
+    """Extract function/method call names from code text."""
+    # Filter out common keywords and built-ins
+    keywords = {
+        "if", "else", "for", "while", "return", "function", "def", "class",
+        "import", "from", "try", "except", "catch", "finally", "with", "as",
+        "print", "len", "str", "int", "float", "list", "dict", "set", "tuple",
+        "True", "False", "None", "self", "this", "new", "const", "let", "var",
+    }
+    calls = []
+    for match in _FUNCTION_CALL_PATTERN.finditer(text):
+        name = match.group(1)
+        if name not in keywords and not name.startswith("_"):
+            calls.append(name)
+    return list(set(calls))  # Deduplicate
+
+
+def resolve_import_to_file(import_path: str, source_file: str, indexed_files: set[str]) -> str | None:
+    """Attempt to resolve an import path to an actual indexed file."""
+    source_dir = Path(source_file).parent
+    
+    # Common resolution strategies
+    candidates = [
+        # Relative import
+        str(source_dir / f"{import_path}.py"),
+        str(source_dir / f"{import_path}.ts"),
+        str(source_dir / f"{import_path}.js"),
+        str(source_dir / import_path / "__init__.py"),
+        str(source_dir / import_path / "index.ts"),
+        str(source_dir / import_path / "index.js"),
+        # Convert dot notation to path
+        str(source_dir / import_path.replace(".", "/") + ".py"),
+        str(source_dir / import_path.replace(".", "/") + ".ts"),
+    ]
+    
+    for candidate in candidates:
+        normalized = str(Path(candidate).resolve())
+        if normalized in indexed_files:
+            return normalized
+    
+    return None
+
+
+def index_file_dependencies(
+    conn: sqlite3.Connection,
+    file_path: str,
+    content: str,
+    indexed_files: set[str],
+) -> int:
+    """Extract and store import dependencies for a file."""
+    imports = extract_imports(content, file_path)
+    count = 0
+    
+    for import_path in imports:
+        resolved = resolve_import_to_file(import_path, file_path, indexed_files)
+        try:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO file_dependencies (source_file, target_import, resolved_file)
+                VALUES (?, ?, ?)
+                """,
+                (file_path, import_path, resolved),
+            )
+            count += 1
+        except Exception:
+            continue
+    
+    return count
+
+
+def extract_symbols_from_chunk(text: str, source: str) -> list[dict]:
+    """Extract function/class symbols from a code chunk using AST or regex."""
+    symbols: list[dict] = []
+    ext = Path(source).suffix.lower()
+    
+    # Use regex patterns as fallback
+    if ext == ".py":
+        # Python: def func_name(...) or class ClassName
+        for match in re.finditer(r"^(?:async\s+)?def\s+(\w+)\s*\(([^)]*)\)", text, re.MULTILINE):
+            symbols.append({
+                "name": match.group(1),
+                "type": "function",
+                "signature": f"def {match.group(1)}({match.group(2)})",
+            })
+        for match in re.finditer(r"^class\s+(\w+)(?:\(([^)]*)\))?:", text, re.MULTILINE):
+            symbols.append({
+                "name": match.group(1),
+                "type": "class",
+                "signature": f"class {match.group(1)}",
+            })
+    elif ext in {".js", ".ts", ".tsx", ".jsx"}:
+        # JS/TS: function name() or const name = () =>
+        for match in re.finditer(r"(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)", text, re.MULTILINE):
+            symbols.append({
+                "name": match.group(1),
+                "type": "function",
+                "signature": f"function {match.group(1)}({match.group(2)})",
+            })
+        for match in re.finditer(r"(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>", text, re.MULTILINE):
+            symbols.append({
+                "name": match.group(1),
+                "type": "function",
+                "signature": f"const {match.group(1)} = () =>",
+            })
+        for match in re.finditer(r"class\s+(\w+)(?:\s+extends\s+\w+)?", text, re.MULTILINE):
+            symbols.append({
+                "name": match.group(1),
+                "type": "class",
+                "signature": f"class {match.group(1)}",
+            })
+    elif ext == ".go":
+        for match in re.finditer(r"func\s+(?:\([^)]+\)\s+)?(\w+)\s*\(([^)]*)\)", text, re.MULTILINE):
+            symbols.append({
+                "name": match.group(1),
+                "type": "function",
+                "signature": f"func {match.group(1)}({match.group(2)})",
+            })
+        for match in re.finditer(r"type\s+(\w+)\s+struct", text, re.MULTILINE):
+            symbols.append({
+                "name": match.group(1),
+                "type": "struct",
+                "signature": f"type {match.group(1)} struct",
+            })
+    elif ext == ".rs":
+        for match in re.finditer(r"(?:pub\s+)?fn\s+(\w+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)", text, re.MULTILINE):
+            symbols.append({
+                "name": match.group(1),
+                "type": "function",
+                "signature": f"fn {match.group(1)}({match.group(2)})",
+            })
+        for match in re.finditer(r"(?:pub\s+)?struct\s+(\w+)", text, re.MULTILINE):
+            symbols.append({
+                "name": match.group(1),
+                "type": "struct",
+                "signature": f"struct {match.group(1)}",
+            })
+    
+    return symbols
+
+
+def index_symbols(
+    conn: sqlite3.Connection,
+    file_path: str,
+    chunk_id: int,
+    chunk_text: str,
+) -> int:
+    """Extract and store symbols from a chunk."""
+    symbols = extract_symbols_from_chunk(chunk_text, file_path)
+    count = 0
+    
+    for symbol in symbols:
+        try:
+            conn.execute(
+                """
+                INSERT INTO symbol_index (file_path, symbol_name, symbol_type, chunk_id, signature)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (file_path, symbol["name"], symbol["type"], chunk_id, symbol.get("signature")),
+            )
+            count += 1
+        except Exception:
+            continue
+    
+    return count
+
+
+def get_imported_files(conn: sqlite3.Connection, source_file: str) -> list[str]:
+    """Get list of files imported by a source file."""
+    rows = conn.execute(
+        """
+        SELECT DISTINCT resolved_file FROM file_dependencies
+        WHERE source_file = ? AND resolved_file IS NOT NULL
+        """,
+        (source_file,),
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def lookup_symbol_definition(conn: sqlite3.Connection, symbol_name: str, limit: int = 3) -> list[dict]:
+    """Look up symbol definitions by name (for 2-hop expansion)."""
+    rows = conn.execute(
+        """
+        SELECT s.file_path, s.symbol_type, s.signature, c.text
+        FROM symbol_index s
+        JOIN chunks c ON s.chunk_id = c.id
+        WHERE s.symbol_name = ?
+        LIMIT ?
+        """,
+        (symbol_name, limit),
+    ).fetchall()
+    
+    return [
+        {
+            "file": row[0],
+            "type": row[1],
+            "signature": row[2],
+            "definition": row[3][:500] if row[3] else None,  # Truncate long definitions
+        }
+        for row in rows
+    ]
+
+
+def expand_symbols_two_hop(
+    conn: sqlite3.Connection,
+    candidates: list[Candidate],
+    max_expansions: int = 5,
+) -> list[dict]:
+    """Perform 2-hop symbol expansion on selected candidates.
+    
+    Extracts function calls from selected chunks and fetches their definitions.
+    This simulates LSP "go to definition" functionality.
+    """
+    referenced_symbols: list[dict] = []
+    seen_symbols: set[str] = set()
+    
+    for candidate in candidates[:3]:  # Only expand top 3 chunks
+        calls = extract_function_calls(candidate.text)
+        
+        for call_name in calls:
+            if call_name in seen_symbols:
+                continue
+            if len(referenced_symbols) >= max_expansions:
+                break
+            
+            definitions = lookup_symbol_definition(conn, call_name, limit=1)
+            if definitions:
+                seen_symbols.add(call_name)
+                referenced_symbols.append({
+                    "symbol": call_name,
+                    "from_chunk": candidate.source,
+                    **definitions[0],
+                })
+    
+    return referenced_symbols
+
+
+def fetch_imported_context(
+    conn: sqlite3.Connection,
+    selected_sources: list[str],
+    query: str,
+    limit_per_file: int = 2,
+) -> list[Candidate]:
+    """Fetch additional context from files imported by selected sources."""
+    additional_candidates: list[Candidate] = []
+    seen_files: set[str] = set(selected_sources)
+    
+    for source in selected_sources:
+        imported_files = get_imported_files(conn, source)
+        
+        for imported_file in imported_files:
+            if imported_file in seen_files:
+                continue
+            seen_files.add(imported_file)
+            
+            # Do a quick FTS search in the imported file
+            rows = conn.execute(
+                """
+                SELECT c.id, c.text, c.chunk_index, c.token_estimate, d.source
+                FROM chunks_fts f
+                JOIN chunks c ON f.rowid = c.id
+                JOIN documents d ON c.document_id = d.id
+                WHERE chunks_fts MATCH ? AND d.source = ?
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (query, imported_file, limit_per_file),
+            ).fetchall()
+            
+            for row in rows:
+                additional_candidates.append(
+                    Candidate(
+                        chunk_id=int(row[0]),
+                        text=str(row[1]),
+                        chunk_index=int(row[2]),
+                        token_estimate=int(row[3]),
+                        source=str(row[4]),
+                        fts_rank=len(additional_candidates),
+                    )
+                )
+    
+    return additional_candidates
+_CODE_BOUNDARY_PATTERNS: dict[str, re.Pattern[str]] = {
+    ".py": re.compile(
+        r"^(?:class\s+\w|def\s+\w|async\s+def\s+\w|@\w+)", re.MULTILINE
+    ),
+    ".js": re.compile(
+        r"^(?:(?:export\s+)?(?:(?:async\s+)?function\s+\w|class\s+\w|const\s+\w+\s*=\s*(?:async\s+)?\(|module\.exports))",
+        re.MULTILINE,
+    ),
+    ".ts": re.compile(
+        r"^(?:(?:export\s+)?(?:(?:async\s+)?function\s+\w|class\s+\w|interface\s+\w|type\s+\w|const\s+\w+\s*=\s*(?:async\s+)?\())",
+        re.MULTILINE,
+    ),
+    ".tsx": re.compile(
+        r"^(?:(?:export\s+)?(?:(?:async\s+)?function\s+\w|class\s+\w|interface\s+\w|type\s+\w|const\s+\w+\s*=))",
+        re.MULTILINE,
+    ),
+    ".jsx": re.compile(
+        r"^(?:(?:export\s+)?(?:(?:async\s+)?function\s+\w|class\s+\w|const\s+\w+\s*=))",
+        re.MULTILINE,
+    ),
+    ".java": re.compile(
+        r"^(?:\s*(?:public|private|protected|static|abstract|final)\s+.*(?:class\s+\w|interface\s+\w|\w+\s*\())",
+        re.MULTILINE,
+    ),
+    ".kt": re.compile(
+        r"^(?:\s*(?:fun\s+|class\s+|interface\s+|object\s+|data\s+class\s+))", re.MULTILINE
+    ),
+    ".go": re.compile(r"^(?:func\s+|type\s+\w+\s+(?:struct|interface))", re.MULTILINE),
+    ".rs": re.compile(
+        r"^(?:(?:pub\s+)?(?:fn\s+|struct\s+|enum\s+|impl\s+|trait\s+|mod\s+))", re.MULTILINE
+    ),
+    ".c": re.compile(
+        r"^(?:\w[\w\s\*]+\s+\w+\s*\(|typedef\s+|struct\s+\w+)", re.MULTILINE
+    ),
+    ".h": re.compile(
+        r"^(?:\w[\w\s\*]+\s+\w+\s*\(|typedef\s+|struct\s+\w+|#define\s+\w+)", re.MULTILINE
+    ),
+    ".cpp": re.compile(
+        r"^(?:\w[\w\s\*:&]+\s+\w+\s*\(|class\s+\w+|namespace\s+\w+|template)", re.MULTILINE
+    ),
+    ".cs": re.compile(
+        r"^(?:\s*(?:public|private|protected|internal|static|abstract)\s+.*(?:class\s+\w|interface\s+\w|\w+\s*\())",
+        re.MULTILINE,
+    ),
+    ".php": re.compile(
+        r"^(?:\s*(?:public|private|protected|static)?\s*function\s+\w|class\s+\w)", re.MULTILINE
+    ),
+    ".rb": re.compile(r"^(?:def\s+\w|class\s+\w|module\s+\w)", re.MULTILINE),
+    ".swift": re.compile(
+        r"^(?:\s*(?:func\s+|class\s+|struct\s+|enum\s+|protocol\s+|extension\s+))", re.MULTILINE
+    ),
+}
+
+# Tree-sitter language mapping: extension -> (language_name, grammar_package_name)
+_TREE_SITTER_LANGUAGES: dict[str, tuple[str, str]] = {
+    ".py": ("python", "tree_sitter_python"),
+    ".js": ("javascript", "tree_sitter_javascript"),
+    ".ts": ("typescript", "tree_sitter_typescript"),
+    ".tsx": ("tsx", "tree_sitter_typescript"),
+    ".jsx": ("javascript", "tree_sitter_javascript"),
+    ".java": ("java", "tree_sitter_java"),
+    ".go": ("go", "tree_sitter_go"),
+    ".rs": ("rust", "tree_sitter_rust"),
+    ".c": ("c", "tree_sitter_c"),
+    ".h": ("c", "tree_sitter_c"),
+    ".cpp": ("cpp", "tree_sitter_cpp"),
+    ".rb": ("ruby", "tree_sitter_ruby"),
+}
+
+# AST node types that represent top-level semantic boundaries
+_AST_BOUNDARY_NODE_TYPES: dict[str, set[str]] = {
+    "python": {"function_definition", "async_function_definition", "class_definition", "decorated_definition"},
+    "javascript": {"function_declaration", "class_declaration", "method_definition", "arrow_function", "export_statement"},
+    "typescript": {"function_declaration", "class_declaration", "method_definition", "interface_declaration", "type_alias_declaration", "export_statement"},
+    "tsx": {"function_declaration", "class_declaration", "method_definition", "interface_declaration", "type_alias_declaration", "export_statement"},
+    "java": {"class_declaration", "interface_declaration", "method_declaration", "constructor_declaration"},
+    "go": {"function_declaration", "method_declaration", "type_declaration"},
+    "rust": {"function_item", "impl_item", "struct_item", "enum_item", "trait_item", "mod_item"},
+    "c": {"function_definition", "struct_specifier", "type_definition"},
+    "cpp": {"function_definition", "class_specifier", "struct_specifier", "namespace_definition"},
+    "ruby": {"method", "class", "module", "singleton_method"},
+}
+
+# Cached tree-sitter parsers
+_TREE_SITTER_PARSER_CACHE: dict[str, object] = {}
+_TREE_SITTER_AVAILABLE: bool | None = None
+
+
+def _is_tree_sitter_available() -> bool:
+    """Check if tree-sitter is available and working."""
+    global _TREE_SITTER_AVAILABLE
+    if _TREE_SITTER_AVAILABLE is not None:
+        return _TREE_SITTER_AVAILABLE
+    try:
+        import tree_sitter  # type: ignore
+        _TREE_SITTER_AVAILABLE = True
+    except ImportError:
+        _TREE_SITTER_AVAILABLE = False
+    return _TREE_SITTER_AVAILABLE
+
+
+def _get_tree_sitter_parser(ext: str) -> object | None:
+    """Get or create a tree-sitter parser for the given file extension."""
+    if ext not in _TREE_SITTER_LANGUAGES:
+        return None
+    if ext in _TREE_SITTER_PARSER_CACHE:
+        return _TREE_SITTER_PARSER_CACHE[ext]
+
+    lang_name, grammar_module = _TREE_SITTER_LANGUAGES[ext]
+
+    try:
+        import tree_sitter  # type: ignore
+        import importlib
+        grammar = importlib.import_module(grammar_module)
+
+        # Handle typescript/tsx which have multiple languages in one package
+        if lang_name == "typescript":
+            language = tree_sitter.Language(grammar.language_typescript())
+        elif lang_name == "tsx":
+            language = tree_sitter.Language(grammar.language_tsx())
+        else:
+            language = tree_sitter.Language(grammar.language())
+
+        parser = tree_sitter.Parser(language)
+        _TREE_SITTER_PARSER_CACHE[ext] = parser
+        return parser
+    except Exception:
+        return None
+
+
+def _extract_ast_chunks(text: str, ext: str, chunk_size_words: int) -> list[str] | None:
+    """Extract semantic chunks from code using tree-sitter AST parsing.
+
+    Returns None if tree-sitter parsing fails or is unavailable, allowing
+    fallback to regex-based chunking.
+    """
+    if not _is_tree_sitter_available():
+        return None
+
+    parser = _get_tree_sitter_parser(ext)
+    if parser is None:
+        return None
+
+    lang_name = _TREE_SITTER_LANGUAGES.get(ext, (None, None))[0]
+    if lang_name is None:
+        return None
+
+    boundary_types = _AST_BOUNDARY_NODE_TYPES.get(lang_name, set())
+    if not boundary_types:
+        return None
+
+    try:
+        tree = parser.parse(text.encode("utf-8"))  # type: ignore
+    except Exception:
+        return None
+
+    # Collect top-level semantic nodes
+    segments: list[str] = []
+
+    def collect_nodes(node: object, depth: int = 0) -> None:
+        """Recursively collect semantic boundary nodes."""
+        node_type = getattr(node, "type", "")
+        if node_type in boundary_types:
+            start_byte = getattr(node, "start_byte", 0)
+            end_byte = getattr(node, "end_byte", len(text))
+            segment_text = text[start_byte:end_byte].strip()
+            if segment_text:
+                segments.append(segment_text)
+            return  # Don't recurse into nested definitions to avoid duplication
+
+        # For module/program root, recurse into children
+        children = getattr(node, "children", [])
+        for child in children:
+            collect_nodes(child, depth + 1)
+
+    root = getattr(tree, "root_node", None)
+    if root is None:
+        return None
+
+    collect_nodes(root)
+
+    if not segments:
+        return None
+
+    # Merge small segments or split oversized ones
+    chunks: list[str] = []
+    buffer: list[str] = []
+    buffer_words = 0
+    max_words = max(chunk_size_words, MIN_CHUNK_WORDS)
+
+    for segment in segments:
+        seg_words = len(segment.split())
+        if seg_words > max_words * 2:
+            # Flush buffer first
+            if buffer:
+                chunks.append("\n\n".join(buffer))
+                buffer, buffer_words = [], 0
+            # Split oversized segment with plain chunker (no overlap for code)
+            sub_chunks = chunk_text(segment, chunk_size_words, overlap_words=0)
+            chunks.extend(sub_chunks)
+        elif buffer_words + seg_words > max_words and buffer:
+            chunks.append("\n\n".join(buffer))
+            buffer, buffer_words = [segment], seg_words
+        else:
+            buffer.append(segment)
+            buffer_words += seg_words
+
+    if buffer:
+        chunks.append("\n\n".join(buffer))
+
+    return [c for c in chunks if c.strip()]
 
 IGNORED_DIRS = {
     ".git",
@@ -418,18 +1030,105 @@ def chunk_text(text: str, chunk_size_words: int, overlap_words: int) -> list[str
     return chunks
 
 
+def is_code_file(path: str) -> bool:
+    return Path(path).suffix.lower() in CODE_EXTENSIONS
+
+
+def chunk_code(text: str, source: str, chunk_size_words: int) -> list[str]:
+    """Split code by function/class boundaries using AST parsing when available.
+
+    Uses tree-sitter for true semantic AST chunking when available.
+    Falls back to regex-based chunking, then to standard chunk_text() if
+    no language pattern matches or if the file has no recognizable boundaries.
+    """
+    ext = Path(source).suffix.lower()
+
+    # Try AST-based chunking first (when tree-sitter is available)
+    if _is_tree_sitter_available() and ext in _TREE_SITTER_LANGUAGES:
+        ast_chunks = _extract_ast_chunks(text, ext, chunk_size_words)
+        if ast_chunks:
+            return ast_chunks
+
+    # Fall back to regex-based chunking
+    pattern = _CODE_BOUNDARY_PATTERNS.get(ext)
+    if pattern is None:
+        return chunk_text(text, chunk_size_words, overlap_words=0)
+
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        return []
+
+    # Find line indices where a new top-level symbol starts
+    boundary_lines: list[int] = []
+    for i, line in enumerate(lines):
+        if pattern.match(line):
+            boundary_lines.append(i)
+
+    if not boundary_lines:
+        return chunk_text(text, chunk_size_words, overlap_words=0)
+
+    # Build segments between boundaries
+    segments: list[str] = []
+    if boundary_lines[0] > 0:
+        preamble = "".join(lines[: boundary_lines[0]]).strip()
+        if preamble:
+            segments.append(preamble)
+
+    for idx, start in enumerate(boundary_lines):
+        end = boundary_lines[idx + 1] if idx + 1 < len(boundary_lines) else len(lines)
+        segment = "".join(lines[start:end]).strip()
+        if segment:
+            segments.append(segment)
+
+    # Merge small segments or split oversized ones
+    chunks: list[str] = []
+    buffer: list[str] = []
+    buffer_words = 0
+    max_words = max(chunk_size_words, MIN_CHUNK_WORDS)
+
+    for segment in segments:
+        seg_words = len(segment.split())
+        if seg_words > max_words * 2:
+            # Flush buffer first
+            if buffer:
+                chunks.append("\n\n".join(buffer))
+                buffer, buffer_words = [], 0
+            # Split oversized segment with plain chunker (no overlap for code)
+            sub_chunks = chunk_text(segment, chunk_size_words, overlap_words=0)
+            chunks.extend(sub_chunks)
+        elif buffer_words + seg_words > max_words and buffer:
+            chunks.append("\n\n".join(buffer))
+            buffer, buffer_words = [segment], seg_words
+        else:
+            buffer.append(segment)
+            buffer_words += seg_words
+
+    if buffer:
+        chunks.append("\n\n".join(buffer))
+
+    return [c for c in chunks if c.strip()]
+
+
 def embed_text_hash(text: str, dimensions: int) -> list[float]:
+    """Create hash-based embeddings using locality-sensitive hashing.
+
+    Note: Hash embeddings provide lexical similarity similar to FTS5/BM25.
+    When hashEmbeddingSkipVector is true (default), vector retrieval is
+    skipped entirely when using hash backend to avoid redundant noise.
+    """
     vec = [0.0] * dimensions
     terms = tokenize(text)
     if not terms:
         return vec
+
+    ngram_weight = get_weight("char_ngram_weight")
 
     term_counts: dict[str, float] = {}
     for term in terms:
         term_counts[f"w:{term}"] = term_counts.get(f"w:{term}", 0.0) + 1.0
         for gram in char_ngrams(term):
             key = f"g:{gram}"
-            term_counts[key] = term_counts.get(key, 0.0) + 0.35
+            term_counts[key] = term_counts.get(key, 0.0) + ngram_weight
 
     for term, count in term_counts.items():
         digest = blake2b(term.encode("utf-8"), digest_size=16).digest()
@@ -530,8 +1229,48 @@ def bm25_to_score(bm25_value: float | None) -> float:
     return 1.0 / (1.0 + abs(float(bm25_value)))
 
 
+MAX_FILE_SIZE_BYTES = 512 * 1024  # 512 KB — skip files larger than this
+
+_MINIFIED_PATTERN = re.compile(r"[^\n]{500,}")  # lines >500 chars suggest minification
+
+
 def is_text_file(path: Path) -> bool:
     return path.suffix.lower() in TEXT_EXTENSIONS
+
+
+def should_skip_file(path: Path) -> bool:
+    """Return True for autogenerated, minified, or token-dense files that add noise."""
+    name = path.name.lower()
+    if name in IGNORED_FILENAMES:
+        return True
+    # Block common autogenerated/bundled patterns
+    if name.endswith(".min.js") or name.endswith(".min.css"):
+        return True
+    if name.endswith(".bundle.js") or name.endswith(".chunk.js"):
+        return True
+    if name.endswith(".map"):  # source maps
+        return True
+    # SVG files often contain massive path data
+    if path.suffix.lower() == ".svg":
+        return True
+    # Skip oversized files
+    try:
+        if path.stat().st_size > MAX_FILE_SIZE_BYTES:
+            print(f"[skip] File too large ({path.stat().st_size} bytes): {path.name}", file=sys.stderr)
+            return True
+    except OSError:
+        return True
+    return False
+
+
+def is_minified(text: str, sample_lines: int = 10) -> bool:
+    """Detect minified content by checking for extremely long lines."""
+    for i, line in enumerate(text.splitlines()):
+        if i >= sample_lines:
+            break
+        if len(line) > 500:
+            return True
+    return False
 
 
 def collect_input_files(inputs: Sequence[str]) -> list[Path]:
@@ -544,7 +1283,7 @@ def collect_input_files(inputs: Sequence[str]) -> list[Path]:
             continue
 
         if path.is_file():
-            if is_text_file(path):
+            if is_text_file(path) and not should_skip_file(path):
                 files.add(path)
             continue
 
@@ -552,7 +1291,7 @@ def collect_input_files(inputs: Sequence[str]) -> list[Path]:
             dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
             for name in names:
                 candidate = Path(root) / name
-                if is_text_file(candidate):
+                if is_text_file(candidate) and not should_skip_file(candidate):
                     files.add(candidate.resolve())
 
     return sorted(files)
@@ -637,6 +1376,40 @@ def connect_db(db_path: Path) -> sqlite3.Connection:
 
             CREATE INDEX IF NOT EXISTS idx_query_cache_expires
             ON query_cache(expires_at_epoch);
+
+            -- Import graph for "fake LSP" functionality
+            CREATE TABLE IF NOT EXISTS file_dependencies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_file TEXT NOT NULL,
+                target_import TEXT NOT NULL,
+                resolved_file TEXT,
+                UNIQUE(source_file, target_import)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_file_deps_source
+            ON file_dependencies(source_file);
+
+            CREATE INDEX IF NOT EXISTS idx_file_deps_resolved
+            ON file_dependencies(resolved_file);
+
+            -- Symbol index for 2-hop expansion
+            CREATE TABLE IF NOT EXISTS symbol_index (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path TEXT NOT NULL,
+                symbol_name TEXT NOT NULL,
+                symbol_type TEXT,
+                chunk_id INTEGER,
+                line_start INTEGER,
+                line_end INTEGER,
+                signature TEXT,
+                FOREIGN KEY (chunk_id) REFERENCES chunks(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_symbol_name
+            ON symbol_index(symbol_name);
+
+            CREATE INDEX IF NOT EXISTS idx_symbol_file
+            ON symbol_index(file_path);
             """
         )
 
@@ -821,7 +1594,10 @@ def upsert_document(
         )
         document_id = int(cursor.lastrowid)
 
-    chunks = chunk_text(cleaned_text, chunk_size_words, overlap_words)
+    if is_code_file(source):
+        chunks = chunk_code(cleaned_text, source, chunk_size_words)
+    else:
+        chunks = chunk_text(cleaned_text, chunk_size_words, overlap_words)
     for idx, chunk in enumerate(chunks):
         cursor = conn.execute(
             """
@@ -871,6 +1647,10 @@ def index_corpus(
         raw = read_text_file(path)
         if raw is None:
             print(f"[warn] Could not read file: {path}", file=sys.stderr)
+            continue
+
+        if is_minified(raw):
+            print(f"[skip] Minified content detected: {path.name}", file=sys.stderr)
             continue
 
         cleaned = clean_text(raw)
@@ -1073,6 +1853,150 @@ def query_hnsw_index(
     return results
 
 
+def try_import_faiss():
+    try:
+        import faiss  # type: ignore
+        import numpy as np  # type: ignore
+        return faiss, np
+    except Exception:
+        return None, None
+
+
+def build_faiss_index(
+    conn: sqlite3.Connection,
+    db_path: Path,
+    backend: str,
+    dimensions: int,
+    model_name: str | None,
+) -> bool:
+    faiss, np = try_import_faiss()
+    if faiss is None or np is None:
+        return False
+
+    rows = fetch_embeddings_for_ann(
+        conn=conn, backend=backend, dimensions=dimensions, model_name=model_name,
+    )
+    if not rows:
+        return False
+
+    ids: list[int] = []
+    vectors: list[list[float]] = []
+    for row in rows:
+        try:
+            vec = [float(x) for x in json.loads(str(row["embedding_json"]))]
+        except Exception:
+            continue
+        if len(vec) != dimensions:
+            continue
+        ids.append(int(row["chunk_id"]))
+        vectors.append(vec)
+
+    if not ids:
+        return False
+
+    prefix = ann_artifact_prefix(
+        db_path=db_path, backend=backend, dimensions=dimensions, model_name=model_name,
+    )
+    index_path = prefix.with_suffix(".faiss.bin")
+    meta_path = prefix.with_suffix(".faiss.meta.json")
+    idmap_path = prefix.with_suffix(".faiss.idmap.json")
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+
+    data = np.array(vectors, dtype=np.float32)
+    faiss.normalize_L2(data)
+
+    n_elements = len(ids)
+    if n_elements < 1000:
+        index = faiss.IndexFlatIP(dimensions)
+    else:
+        n_clusters = min(int(math.sqrt(n_elements)), 256)
+        quantizer = faiss.IndexFlatIP(dimensions)
+        index = faiss.IndexIVFFlat(quantizer, dimensions, n_clusters, faiss.METRIC_INNER_PRODUCT)
+        index.train(data)
+        index.nprobe = min(16, n_clusters)
+
+    index.add(data)
+    faiss.write_index(index, str(index_path))
+
+    idmap_path.write_text(json.dumps(ids, separators=(",", ":")), encoding="utf-8")
+    meta_payload = {
+        "engine": "faiss",
+        "backend": backend,
+        "dimensions": dimensions,
+        "model_name": model_name,
+        "elements": n_elements,
+        "index_fingerprint": get_index_fingerprint(conn),
+        "created_at": utc_now_iso(),
+    }
+    meta_path.write_text(json.dumps(meta_payload), encoding="utf-8")
+    return True
+
+
+def query_faiss_index(
+    conn: sqlite3.Connection,
+    db_path: Path,
+    query_vec: list[float],
+    limit: int,
+    backend: str,
+    model_name: str | None,
+) -> list[tuple[int, float]]:
+    faiss, np = try_import_faiss()
+    if faiss is None or np is None:
+        return []
+
+    dimensions = len(query_vec)
+    prefix = ann_artifact_prefix(
+        db_path=db_path, backend=backend, dimensions=dimensions, model_name=model_name,
+    )
+    index_path = prefix.with_suffix(".faiss.bin")
+    meta_path = prefix.with_suffix(".faiss.meta.json")
+    idmap_path = prefix.with_suffix(".faiss.idmap.json")
+
+    if not index_path.exists() or not meta_path.exists():
+        built = build_faiss_index(
+            conn=conn, db_path=db_path, backend=backend,
+            dimensions=dimensions, model_name=model_name,
+        )
+        if not built:
+            return []
+
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        meta = {}
+
+    current_fp = get_index_fingerprint(conn)
+    if meta.get("index_fingerprint") != current_fp:
+        rebuilt = build_faiss_index(
+            conn=conn, db_path=db_path, backend=backend,
+            dimensions=dimensions, model_name=model_name,
+        )
+        if not rebuilt:
+            return []
+
+    try:
+        id_map = json.loads(idmap_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    index = faiss.read_index(str(index_path))
+    qvec = np.array([query_vec], dtype=np.float32)
+    faiss.normalize_L2(qvec)
+
+    k = min(max(1, limit), index.ntotal)
+    scores, indices = index.search(qvec, k)
+
+    results: list[tuple[int, float]] = []
+    for idx_pos, score in zip(indices[0], scores[0]):
+        idx_pos = int(idx_pos)
+        if idx_pos < 0 or idx_pos >= len(id_map):
+            continue
+        chunk_id = id_map[idx_pos]
+        sim = max(0.0, float(score))
+        results.append((chunk_id, sim))
+    return results
+
+
 def build_fts_query(query: str) -> str:
     terms = tokenize(query)[:20]
     if not terms:
@@ -1231,6 +2155,52 @@ def vector_retrieve(
         if top:
             return top, effective_backend, effective_model, "hnsw"
 
+    # Try FAISS as second ANN engine if HNSW didn't produce results
+    faiss_results = query_faiss_index(
+        conn=conn,
+        db_path=db_path,
+        query_vec=q_vec,
+        limit=limit,
+        backend=effective_backend,
+        model_name=effective_model,
+    )
+    if faiss_results:
+        chunk_ids = [cid for cid, _ in faiss_results]
+        placeholder = ",".join("?" for _ in chunk_ids)
+        detail_rows = conn.execute(
+            f"""
+            SELECT
+                c.id AS chunk_id,
+                c.text AS text,
+                c.chunk_index AS chunk_index,
+                c.token_estimate AS token_estimate,
+                d.source AS source
+            FROM chunks c
+            JOIN documents d ON d.id = c.document_id
+            WHERE c.id IN ({placeholder})
+            """,
+            tuple(chunk_ids),
+        ).fetchall()
+        detail_map = {int(r["chunk_id"]): r for r in detail_rows}
+        top: list[Candidate] = []
+        for i, (chunk_id, sim) in enumerate(faiss_results, start=1):
+            row = detail_map.get(chunk_id)
+            if row is None:
+                continue
+            top.append(
+                Candidate(
+                    chunk_id=int(row["chunk_id"]),
+                    source=str(row["source"]),
+                    chunk_index=int(row["chunk_index"]),
+                    text=str(row["text"]),
+                    token_estimate=int(row["token_estimate"]),
+                    vector_score=float(sim),
+                    vector_rank=i,
+                )
+            )
+        if top:
+            return top, effective_backend, effective_model, "faiss"
+
     rows = fetch_rows(effective_backend, effective_dimensions, effective_model)
 
     if not rows and effective_backend == "ml":
@@ -1307,14 +2277,21 @@ def rerank_candidates(
             existing.vector_rank = candidate.vector_rank
             existing.vector_score = candidate.vector_score
 
+    # Get configurable weights
+    fts_lexical_w = get_weight("fts_lexical_rank_weight")
+    fts_bm25_w = get_weight("fts_bm25_weight")
+    final_fts_w = get_weight("final_fts_weight")
+    final_vector_w = get_weight("final_vector_weight")
+    final_overlap_w = get_weight("final_overlap_weight")
+
     ranked = list(merged.values())
     for item in ranked:
         lexical_rank_signal = rank_score(item.fts_rank)
         bm25_signal = bm25_to_score(item.bm25_score)
-        item.fts_score = (0.35 * lexical_rank_signal) + (0.65 * bm25_signal)
+        item.fts_score = (fts_lexical_w * lexical_rank_signal) + (fts_bm25_w * bm25_signal)
         item.vector_score = item.vector_score if item.vector_score > 0 else rank_score(item.vector_rank)
         item.overlap_score = overlap_ratio(query, item.text)
-        item.final_score = (0.50 * item.fts_score) + (0.35 * item.vector_score) + (0.15 * item.overlap_score)
+        item.final_score = (final_fts_w * item.fts_score) + (final_vector_w * item.vector_score) + (final_overlap_w * item.overlap_score)
 
     ranked.sort(key=lambda c: c.final_score, reverse=True)
     bounded_top_k = max(3, min(top_k, 5))
@@ -1326,6 +2303,117 @@ def split_sentences(text: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
+def textrank_score_sentences(sentences: list[str], damping: float = 0.85, iterations: int = 30) -> list[tuple[float, str]]:
+    """Score sentences using TextRank algorithm for extractive summarization.
+    
+    TextRank builds a graph where sentences are nodes and edges are weighted
+    by semantic similarity. Sentences that are similar to many other important
+    sentences receive higher scores - capturing semantic centrality.
+    """
+    if len(sentences) <= 2:
+        return [(1.0, s) for s in sentences]
+    
+    n = len(sentences)
+    
+    # Build similarity matrix using Jaccard similarity of word sets
+    similarity_matrix: list[list[float]] = [[0.0] * n for _ in range(n)]
+    sentence_words = [set(tokenize(s)) for s in sentences]
+    
+    for i in range(n):
+        for j in range(i + 1, n):
+            if not sentence_words[i] or not sentence_words[j]:
+                sim = 0.0
+            else:
+                intersection = len(sentence_words[i] & sentence_words[j])
+                union = len(sentence_words[i] | sentence_words[j])
+                sim = intersection / union if union > 0 else 0.0
+            similarity_matrix[i][j] = sim
+            similarity_matrix[j][i] = sim
+    
+    # Normalize rows (outgoing edge weights)
+    for i in range(n):
+        row_sum = sum(similarity_matrix[i])
+        if row_sum > 0:
+            for j in range(n):
+                similarity_matrix[i][j] /= row_sum
+    
+    # Initialize scores uniformly
+    scores = [1.0 / n] * n
+    
+    # Power iteration
+    for _ in range(iterations):
+        new_scores = [0.0] * n
+        for i in range(n):
+            rank_sum = sum(similarity_matrix[j][i] * scores[j] for j in range(n))
+            new_scores[i] = (1 - damping) / n + damping * rank_sum
+        scores = new_scores
+    
+    # Normalize final scores
+    max_score = max(scores) if scores else 1.0
+    if max_score > 0:
+        scores = [s / max_score for s in scores]
+    
+    return list(zip(scores, sentences))
+
+
+def cluster_chunks_semantically(
+    chunks: list[str],
+    embeddings: list[list[float]],
+    num_clusters: int = 5,
+) -> list[list[int]]:
+    """Cluster chunks by semantic similarity using k-means on embeddings.
+    
+    Returns list of clusters, each containing chunk indices.
+    This enables selecting diverse, representative chunks.
+    """
+    if len(chunks) <= num_clusters:
+        return [[i] for i in range(len(chunks))]
+    
+    try:
+        import numpy as np
+    except ImportError:
+        # Fallback: return all chunks as single cluster
+        return [list(range(len(chunks)))]
+    
+    embeddings_arr = np.array(embeddings)
+    n = len(chunks)
+    k = min(num_clusters, n)
+    
+    # Simple k-means clustering
+    # Initialize centroids randomly
+    rng = np.random.default_rng(42)
+    centroid_indices = rng.choice(n, size=k, replace=False)
+    centroids = embeddings_arr[centroid_indices].copy()
+    
+    assignments = np.zeros(n, dtype=int)
+    
+    for _ in range(20):  # Max iterations
+        # Assign points to nearest centroid
+        for i in range(n):
+            distances = [np.linalg.norm(embeddings_arr[i] - centroids[j]) for j in range(k)]
+            assignments[i] = int(np.argmin(distances))
+        
+        # Update centroids
+        new_centroids = np.zeros_like(centroids)
+        for j in range(k):
+            cluster_points = embeddings_arr[assignments == j]
+            if len(cluster_points) > 0:
+                new_centroids[j] = cluster_points.mean(axis=0)
+            else:
+                new_centroids[j] = centroids[j]
+        
+        if np.allclose(centroids, new_centroids):
+            break
+        centroids = new_centroids
+    
+    # Build cluster lists
+    clusters: list[list[int]] = [[] for _ in range(k)]
+    for i, cluster_id in enumerate(assignments):
+        clusters[cluster_id].append(i)
+    
+    return [c for c in clusters if c]  # Remove empty clusters
+
+
 def trim_to_words(text: str, max_words: int) -> str:
     words = text.split()
     if len(words) <= max_words:
@@ -1333,28 +2421,148 @@ def trim_to_words(text: str, max_words: int) -> str:
     return " ".join(words[:max_words]).rstrip(".,;:") + "..."
 
 
+_CODE_SIGNATURE_RE = re.compile(
+    r"^(?:"
+    r"(?:export\s+)?(?:async\s+)?(?:def|function|fn|func|fun|sub)\s+\w+[^{;]*"
+    r"|(?:public|private|protected|internal|static|abstract|final|override|open|sealed|suspend|inline)\s+.*\w+\s*\([^)]*\)"
+    r"|class\s+\w+[^{]*"
+    r"|interface\s+\w+[^{]*"
+    r"|struct\s+\w+[^{]*"
+    r"|enum\s+\w+[^{]*"
+    r"|trait\s+\w+[^{]*"
+    r"|impl\s+.*"
+    r"|type\s+\w+\s+(?:struct|interface)[^{]*"
+    r"|module\s+\w+"
+    r"|(?:const|let|var)\s+\w+\s*[:=]"
+    r")",
+    re.MULTILINE,
+)
+
+_DOCSTRING_RE = re.compile(
+    r'(?:"""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\'|/\*\*[\s\S]*?\*/|///.*|//!.*|##.*)',
+)
+
+
+def extract_code_signatures(text: str) -> list[str]:
+    """Extract function/class signatures and docstrings from code text."""
+    results: list[str] = []
+    for match in _CODE_SIGNATURE_RE.finditer(text):
+        sig = match.group(0).strip()
+        if sig and len(sig.split()) >= 2:
+            results.append(sig)
+    for match in _DOCSTRING_RE.finditer(text):
+        doc = match.group(0).strip()
+        # Trim long docstrings to first 3 lines
+        doc_lines = doc.splitlines()
+        if len(doc_lines) > 3:
+            doc = "\n".join(doc_lines[:3]) + " ..."
+        if doc and len(doc.split()) >= 3:
+            results.append(doc)
+    return results
+
+
+def merge_adjacent_candidates(candidates: list[Candidate]) -> list[Candidate]:
+    """Merge candidates with adjacent chunk indices from the same source to eliminate overlap."""
+    if len(candidates) <= 1:
+        return candidates
+
+    # Group by source
+    by_source: dict[str, list[Candidate]] = {}
+    for c in candidates:
+        by_source.setdefault(c.source, []).append(c)
+
+    merged: list[Candidate] = []
+    for source, group in by_source.items():
+        group.sort(key=lambda c: c.chunk_index)
+        run: list[Candidate] = [group[0]]
+
+        for i in range(1, len(group)):
+            prev = run[-1]
+            curr = group[i]
+            if curr.chunk_index == prev.chunk_index + 1:
+                run.append(curr)
+            else:
+                merged.append(_merge_run(run))
+                run = [curr]
+        merged.append(_merge_run(run))
+
+    # Preserve original score ordering
+    merged.sort(key=lambda c: c.final_score, reverse=True)
+    return merged
+
+
+def _merge_run(run: list[Candidate]) -> Candidate:
+    if len(run) == 1:
+        return run[0]
+    combined_text = "\n".join(c.text for c in run)
+    return Candidate(
+        chunk_id=run[0].chunk_id,
+        source=run[0].source,
+        chunk_index=run[0].chunk_index,
+        text=combined_text,
+        token_estimate=sum(c.token_estimate for c in run),
+        bm25_score=run[0].bm25_score,
+        fts_rank=run[0].fts_rank,
+        vector_rank=run[0].vector_rank,
+        vector_score=max(c.vector_score for c in run),
+        fts_score=max(c.fts_score for c in run),
+        overlap_score=max(c.overlap_score for c in run),
+        final_score=max(c.final_score for c in run),
+    )
+
+
 def compress_candidates(query: str, candidates: list[Candidate], word_budget: int) -> list[str]:
+    # Merge adjacent chunks before compression to eliminate overlap redundancy
+    candidates = merge_adjacent_candidates(candidates)
+
     query_terms = set(tokenize(query))
     bullets: list[str] = []
     words_used = 0
 
+    # Get configurable weights for sentence scoring
+    length_bonus_w = get_weight("sentence_length_bonus_weight")
+    length_normalizer = get_weight("sentence_length_normalizer")
+
     for candidate in candidates:
-        sentences = split_sentences(candidate.text)
-        if not sentences:
-            continue
+        source_is_code = is_code_file(candidate.source)
 
-        scored_sentences: list[tuple[float, str]] = []
-        for sentence in sentences:
-            sent_terms = set(tokenize(sentence))
-            overlap = len(query_terms & sent_terms)
-            signal = overlap / float(len(query_terms)) if query_terms else 0.0
-            length_bonus = min(1.0, len(sentence.split()) / 24.0)
-            score = signal + (0.10 * length_bonus)
-            scored_sentences.append((score, sentence))
+        if source_is_code:
+            # For code: extract signatures and docstrings instead of sentence splitting
+            snippets = extract_code_signatures(candidate.text)
+            if not snippets:
+                # Fallback: use first N lines preserving code structure
+                code_lines = [l for l in candidate.text.splitlines() if l.strip()]
+                snippets = code_lines[:5] if code_lines else []
+            if not snippets:
+                continue
+            summary = " | ".join(snippets[:4]).strip()
+        else:
+            # For prose: TextRank-based sentence scoring for intelligent summarization
+            sentences = split_sentences(candidate.text)
+            if not sentences:
+                continue
+            
+            # Get configurable weights
+            textrank_w = get_weight("textrank_weight")
+            query_relevance_w = get_weight("query_relevance_weight")
+            
+            # Use TextRank for semantic importance, boosted by query overlap
+            textrank_scores = textrank_score_sentences(sentences)
+            scored_sentences: list[tuple[float, str]] = []
+            
+            for tr_score, sentence in textrank_scores:
+                sent_terms = set(tokenize(sentence))
+                overlap = len(query_terms & sent_terms)
+                query_signal = overlap / float(len(query_terms)) if query_terms else 0.0
+                length_bonus = min(1.0, len(sentence.split()) / length_normalizer)
+                # Combine TextRank centrality with query relevance
+                combined_score = (textrank_w * tr_score) + (query_relevance_w * query_signal) + (length_bonus_w * length_bonus)
+                scored_sentences.append((combined_score, sentence))
+            
+            scored_sentences.sort(key=lambda pair: pair[0], reverse=True)
+            selected = [s for _, s in scored_sentences[:2]]
+            summary = " ".join(selected).strip()
 
-        scored_sentences.sort(key=lambda pair: pair[0], reverse=True)
-        selected = [s for _, s in scored_sentences[:2]]
-        summary = " ".join(selected).strip()
         if not summary:
             continue
 
@@ -1396,6 +2604,8 @@ def build_packet(
     vector_backend_used: str,
     vector_model_used: str | None,
     vector_retrieval_path: str,
+    referenced_symbols: list[dict] | None = None,
+    imported_context: list[Candidate] | None = None,
 ) -> dict:
     source_count = len({c.source for c in selected})
     candidate_pool_tokens = sum(c.token_estimate for c in candidate_pool)
@@ -1546,7 +2756,12 @@ def run_retrieval_pipeline(
     vector_model_used: str | None = None
     vector_retrieval_path = "disabled"
 
+    # Skip vector retrieval when using hash embeddings (redundant with FTS5/BM25)
     use_vector = hybrid_mode == "always" or (hybrid_mode == "fallback" and len(fts_hits) < min_fts_hits)
+    if embedding_backend == "hash" and should_skip_vector_for_hash():
+        use_vector = False
+        vector_retrieval_path = "skipped_hash_backend"
+
     if use_vector:
         vector_hits, vector_backend_used, vector_model_used, vector_retrieval_path = vector_retrieve(
             conn=conn,
@@ -1771,6 +2986,190 @@ def cmd_run(args: argparse.Namespace) -> int:
         conn.close()
 
 
+def cmd_benchmark(args: argparse.Namespace) -> int:
+    """Run comprehensive benchmarks and generate metrics report."""
+    import time
+    
+    db_path = Path(args.db).expanduser().resolve()
+    
+    # Collect test files
+    files = collect_input_files(args.inputs) if args.inputs else []
+    if not files:
+        print("No input files for benchmarking. Provide --inputs.", file=sys.stderr)
+        return 1
+    
+    # Calculate raw input stats
+    raw_tokens_total = 0
+    raw_chars_total = 0
+    file_stats: list[dict] = []
+    
+    for file_path in files:
+        try:
+            content = Path(file_path).read_text(encoding="utf-8", errors="replace")
+            tokens = estimate_tokens(content)
+            raw_tokens_total += tokens
+            raw_chars_total += len(content)
+            file_stats.append({
+                "file": str(file_path),
+                "tokens": tokens,
+                "chars": len(content),
+            })
+        except Exception:
+            continue
+    
+    # Benchmark indexing
+    conn = connect_db(db_path)
+    embedding_backend, embedding_model = resolve_embedding_backend(
+        requested_backend=args.embedding_backend,
+        requested_model=args.embedding_model,
+    )
+    chunk_size_words, overlap_words = normalize_chunking(args.chunk_size, args.overlap)
+    
+    index_start = time.perf_counter()
+    stats = index_corpus(
+        conn=conn,
+        file_paths=files,
+        chunk_size_words=chunk_size_words,
+        overlap_words=overlap_words,
+        dimensions=args.dimensions,
+        embedding_backend=embedding_backend,
+        embedding_model=embedding_model,
+    )
+    index_latency_ms = (time.perf_counter() - index_start) * 1000
+    
+    # Build ANN index
+    inferred_dims = infer_embedding_dimensions(
+        conn=conn,
+        backend=embedding_backend,
+        model_name=embedding_model,
+        fallback_dimensions=args.dimensions,
+    )
+    build_hnsw_index(
+        conn=conn,
+        db_path=db_path,
+        backend=embedding_backend,
+        dimensions=inferred_dims,
+        model_name=embedding_model,
+    )
+    
+    # Benchmark queries
+    test_queries = [
+        "How does authentication work?",
+        "What functions handle database connections?",
+        "Error handling patterns in this codebase",
+        "Main entry point and initialization",
+        "API endpoint implementations",
+    ]
+    
+    query_metrics: list[dict] = []
+    compressed_tokens_total = 0
+    
+    for query in test_queries:
+        query_start = time.perf_counter()
+        result = run_retrieval_pipeline(
+            conn=conn,
+            db_path=db_path,
+            query=query,
+            top_k=args.top_k,
+            fts_k=args.fts_k,
+            vector_k=args.vector_k,
+            min_fts_hits=DEFAULT_MIN_FTS_HITS,
+            hybrid_mode=args.hybrid_mode,
+            retrieval_mode="compact",
+            embedding_backend=embedding_backend,
+            embedding_model=embedding_model,
+            session_id="benchmark",
+            query_cache_ttl_seconds=0,  # Disable cache for benchmarking
+            dimensions=args.dimensions,
+            word_budget=args.word_budget,
+        )
+        query_latency_ms = (time.perf_counter() - query_start) * 1000
+        
+        compressed_tokens = result.get("token_metrics", {}).get("compressed_tokens", 0)
+        selected_tokens = result.get("token_metrics", {}).get("selected_chunk_tokens", 0)
+        compressed_tokens_total += compressed_tokens
+        
+        query_metrics.append({
+            "query": query,
+            "latency_ms": round(query_latency_ms, 2),
+            "fts_hits": result.get("retrieval", {}).get("fts_hits", 0),
+            "vector_hits": result.get("retrieval", {}).get("vector_hits", 0),
+            "selected_chunks": result.get("selected_chunks", 0),
+            "selected_tokens": selected_tokens,
+            "compressed_tokens": compressed_tokens,
+            "compression_ratio": round(selected_tokens / max(1, compressed_tokens), 2),
+        })
+    
+    conn.close()
+    
+    # Calculate aggregate metrics
+    avg_query_latency = sum(q["latency_ms"] for q in query_metrics) / len(query_metrics)
+    avg_compression_ratio = sum(q["compression_ratio"] for q in query_metrics) / len(query_metrics)
+    
+    # Token savings analysis
+    # If user sent all raw content vs using token-reducer
+    hypothetical_saved = raw_tokens_total - (compressed_tokens_total / len(test_queries))
+    savings_pct = (hypothetical_saved / raw_tokens_total * 100) if raw_tokens_total > 0 else 0
+    
+    # Cost savings estimate (assuming $0.01 per 1K input tokens for Claude)
+    cost_per_1k_tokens = 0.01
+    raw_cost = (raw_tokens_total / 1000) * cost_per_1k_tokens
+    compressed_cost = (compressed_tokens_total / len(test_queries) / 1000) * cost_per_1k_tokens
+    cost_savings = raw_cost - compressed_cost
+    
+    report = {
+        "benchmark_summary": {
+            "files_indexed": len(files),
+            "chunks_created": stats["chunks_indexed"],
+            "raw_input_tokens": raw_tokens_total,
+            "raw_input_chars": raw_chars_total,
+            "embedding_backend": embedding_backend,
+            "embedding_model": embedding_model,
+        },
+        "latency_metrics": {
+            "index_time_ms": round(index_latency_ms, 2),
+            "avg_query_time_ms": round(avg_query_latency, 2),
+            "min_query_time_ms": round(min(q["latency_ms"] for q in query_metrics), 2),
+            "max_query_time_ms": round(max(q["latency_ms"] for q in query_metrics), 2),
+        },
+        "compression_metrics": {
+            "avg_compression_ratio": round(avg_compression_ratio, 2),
+            "avg_compressed_tokens_per_query": round(compressed_tokens_total / len(test_queries), 0),
+            "total_queries_benchmarked": len(test_queries),
+        },
+        "token_savings": {
+            "raw_context_tokens": raw_tokens_total,
+            "avg_compressed_tokens": round(compressed_tokens_total / len(test_queries), 0),
+            "estimated_savings_pct": round(savings_pct, 1),
+            "tokens_saved_per_query": round(hypothetical_saved, 0),
+        },
+        "cost_analysis": {
+            "note": "Estimated at $0.01 per 1K input tokens",
+            "raw_context_cost_usd": round(raw_cost, 4),
+            "compressed_cost_usd": round(compressed_cost, 4),
+            "savings_per_query_usd": round(cost_savings, 4),
+            "savings_per_100_queries_usd": round(cost_savings * 100, 2),
+        },
+        "query_details": query_metrics,
+    }
+    
+    print(json.dumps(report, indent=2))
+    
+    # Print human-readable summary
+    print("\n" + "=" * 60, file=sys.stderr)
+    print("TOKEN REDUCER BENCHMARK SUMMARY", file=sys.stderr)
+    print("=" * 60, file=sys.stderr)
+    print(f"Files indexed: {len(files)}", file=sys.stderr)
+    print(f"Raw input tokens: {raw_tokens_total:,}", file=sys.stderr)
+    print(f"Avg compressed tokens: {compressed_tokens_total // len(test_queries):,}", file=sys.stderr)
+    print(f"Token savings: {savings_pct:.1f}%", file=sys.stderr)
+    print(f"Avg query latency: {avg_query_latency:.1f}ms", file=sys.stderr)
+    print(f"Cost savings per 100 queries: ${cost_savings * 100:.2f}", file=sys.stderr)
+    print("=" * 60, file=sys.stderr)
+    
+    return 0
+
+
 def cmd_self_test(_args: argparse.Namespace) -> int:
     with tempfile.TemporaryDirectory(prefix="token-reducer-self-test-") as tmp_dir:
         root = Path(tmp_dir)
@@ -1923,6 +3322,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("self-test", help="Run internal checks for BM25+hybrid retrieval and token reduction behavior.")
 
+    benchmark_parser = subparsers.add_parser("benchmark", help="Run benchmarks and generate metrics report.")
+    benchmark_parser.add_argument("--inputs", nargs="+", required=True, help="Files or directories to benchmark.")
+    benchmark_parser.add_argument("--db", default=str(DEFAULT_DB_PATH), help="SQLite index path.")
+    benchmark_parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
+    benchmark_parser.add_argument("--overlap", type=int, default=DEFAULT_CHUNK_OVERLAP)
+    benchmark_parser.add_argument("--embedding-backend", choices=["hash", "ml"], default=DEFAULT_EMBEDDING_BACKEND)
+    benchmark_parser.add_argument("--embedding-model", default=DEFAULT_EMBEDDING_MODEL)
+    benchmark_parser.add_argument("--dimensions", type=int, default=DEFAULT_DIMENSIONS)
+    benchmark_parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
+    benchmark_parser.add_argument("--fts-k", type=int, default=DEFAULT_FTS_K)
+    benchmark_parser.add_argument("--vector-k", type=int, default=DEFAULT_VECTOR_K)
+    benchmark_parser.add_argument("--hybrid-mode", choices=["always", "fallback"], default=DEFAULT_HYBRID_MODE)
+    benchmark_parser.add_argument("--word-budget", type=int, default=DEFAULT_WORD_BUDGET)
+
     return parser
 
 
@@ -1938,6 +3351,8 @@ def main() -> int:
         return cmd_run(args)
     if args.command == "self-test":
         return cmd_self_test(args)
+    if args.command == "benchmark":
+        return cmd_benchmark(args)
 
     parser.print_help()
     return 1
