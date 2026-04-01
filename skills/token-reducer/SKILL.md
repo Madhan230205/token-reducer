@@ -5,7 +5,7 @@ license: MIT
 compatibility: Python 3.10+ with SQLite FTS5. Fully local and free by default. Context7 MCP is optional.
 allowed-tools: [Read, Glob, Grep, Bash, Task]
 metadata:
-  author: Madv6
+  author: Madhan230205
   version: "1.0.0"
 ---
 

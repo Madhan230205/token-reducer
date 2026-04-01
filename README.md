@@ -4,7 +4,7 @@ Save tokens. Save money. Keep answers sharp.
 
 `token-reducer` is a free, local-first Claude Code plugin that reduces context bloat by sending only high-signal compressed context to the model.
 
-GitHub: https://github.com/Madv6/token-reducer
+GitHub: https://github.com/Madhan230205/token-reducer
 
 ## What it does
 
@@ -51,15 +51,15 @@ token-reducer/
 ## Marketplace publish + install
 
 1. Push this folder as a public GitHub repo:
-   - `https://github.com/Madv6/token-reducer`
+   - `https://github.com/Madhan230205/token-reducer`
 2. Register marketplace in Claude Code:
-   - `/plugin marketplace add Madv6/token-reducer`
+   - `/plugin marketplace add Madhan230205/token-reducer`
 3. Install plugin:
-   - `claude plugin install token-reducer@madv6-marketplace`
+   - `claude plugin install token-reducer@madhan230205-marketplace`
 
 For teams:
 
-- `claude plugin install token-reducer@madv6-marketplace --scope project`
+- `claude plugin install token-reducer@madhan230205-marketplace --scope project`
 
 Detailed rollout checklist: `MARKETPLACE.md`
 
