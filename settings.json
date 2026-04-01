@@ -1,0 +1,30 @@
+{
+  "tokenReducer": {
+    "chunkSizeWords": 220,
+    "chunkOverlapWords": 40,
+    "chunkSizeMinWords": 150,
+    "chunkSizeMaxWords": 300,
+    "embeddingDimensions": 256,
+    "embeddingBackend": "ml",
+    "embeddingModel": "sentence-transformers/all-MiniLM-L6-v2",
+    "embeddingFallbackBackend": "hash",
+    "ftsCandidateCount": 12,
+    "vectorCandidateCount": 20,
+    "hybridMode": "fallback",
+    "bm25Enabled": true,
+    "annEngine": "hnsw",
+    "annEfSearch": 160,
+    "minFinalContexts": 3,
+    "maxFinalContexts": 5,
+    "compressionWordBudget": 350,
+    "compressionMaxSelectedRatio": 0.6,
+    "queryCacheTtlSeconds": 900,
+    "sessionMemoryEnabled": true,
+    "maxQueryWords": 500,
+    "maxQueryLines": 80,
+    "historyCompactReminderTurns": [12, 20, 28, 36],
+    "preferFtsFirst": true,
+    "vectorFallbackMinFtsHits": 3,
+    "context7Optional": true
+  }
+}

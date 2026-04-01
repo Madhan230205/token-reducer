@@ -1,0 +1,21 @@
+{
+  "name": "token-reducer",
+  "version": "1.0.0",
+  "description": "Free, local-first Claude Code plugin that reduces token usage with BM25+hybrid retrieval, reranking, and compressed context packets.",
+  "author": {
+    "name": "Madv6",
+    "url": "https://github.com/Madv6"
+  },
+  "homepage": "https://github.com/Madv6/token-reducer",
+  "repository": "https://github.com/Madv6/token-reducer",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "token-reduction",
+    "context-optimization",
+    "rag",
+    "sqlite-fts",
+    "embeddings",
+    "context7"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "description": "token-reducer prompt guardrails for bypass prevention and session hygiene reminders",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/userprompt_guard.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

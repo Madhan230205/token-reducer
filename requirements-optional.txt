@@ -1,0 +1,6 @@
+# Optional dependencies for higher-quality semantic retrieval and ANN acceleration.
+# Core pipeline still runs without these packages (hash embeddings + scan fallback).
+
+sentence-transformers>=3.0.0
+numpy>=1.26.0
+hnswlib>=0.8.0

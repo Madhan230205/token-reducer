@@ -1,0 +1,26 @@
+{
+  "skill_name": "token-reducer",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "My context is too long. Build a lean packet for auth middleware implementation details from this repo.",
+      "expected_output": "A top-3 to top-5 citation-rich compressed packet with estimated token savings.",
+      "expectations": [
+        "Pipeline follows preprocess, index, retrieve, rerank, compress, send.",
+        "FTS(BM25) runs first and vector retrieval follows fallback policy unless always mode is requested.",
+        "FTS and vector candidates are merged before final top-5 selection.",
+        "Final payload is compressed and not raw file dumps."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Repeat the same query twice in one session and inspect telemetry.",
+      "expected_output": "Second response reports cache hit and session continuity.",
+      "expectations": [
+        "cache.hit is false for first retrieval and true for second retrieval.",
+        "session_memory.recent_queries includes repeated query.",
+        "Retrieval remains top-5 capped and BM25-enabled."
+      ]
+    }
+  ]
+}
