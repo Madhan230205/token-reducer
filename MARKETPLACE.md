@@ -13,7 +13,7 @@
 ## 3) Install and verify
 
 - Install:
-  - `claude plugin install token-reducer@madhan230205-marketplace`
+  - `/plugin install token-reducer`
 - Verify plugin is active:
   - `/plugin list`
 - Reload if needed:

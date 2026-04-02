@@ -53,7 +53,28 @@ Every time you use Claude with a large codebase, you're paying for **thousands o
 
 ## Easy Install
 
-### Option 1 — Git Clone (Recommended for Everyone)
+### Option 1 — Claude Code `/plugin` Command (Recommended)
+
+**Step 1:** Register the marketplace (one-time setup):
+```
+/plugin marketplace add Madhan230205/token-reducer
+```
+
+**Step 2:** Install:
+```
+/plugin install token-reducer
+```
+
+For project-scoped install:
+```
+/plugin install token-reducer --scope project
+```
+
+> **Already ran Step 1 before?** Just run `/plugin install token-reducer` — no need to add the marketplace again.
+
+---
+
+### Option 2 — Git Clone (Manual)
 
 ```bash
 # 1. Clone into your Claude plugins folder
@@ -65,7 +86,7 @@ pip install -r ~/.claude/plugins/token-reducer/requirements-optional.txt
 
 > **Windows users**: Replace `~/.claude/plugins/` with `%USERPROFILE%\.claude\plugins\`
 
-Then tell Claude Code where the plugin lives — open your `~/.claude/settings.json` and add:
+Then open `~/.claude/settings.json` and add:
 
 ```json
 {
@@ -88,25 +109,6 @@ Restart Claude Code. Done.
 If you skip this step, Token Reducer still works using hash embeddings and regex chunking — no ML libraries required.
 
 ---
-
-### Option 2 — Claude Code `/plugin` Commands
-
-Two steps — register the marketplace, then install:
-
-**Step 1:** Add the marketplace (one-time):
-```
-/plugin marketplace add https://github.com/Madhan230205/token-reducer.git
-```
-
-**Step 2:** Install the plugin:
-```
-/plugin install token-reducer
-```
-
-For project-scoped install:
-```
-/plugin install token-reducer --scope project
-```
 
 ### Option 3 — Zero-Dependency Quick Start
 
