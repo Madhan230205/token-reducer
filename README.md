@@ -89,18 +89,23 @@ If you skip this step, Token Reducer still works using hash embeddings and regex
 
 ---
 
-### Option 2 — Claude Code Marketplace
+### Option 2 — Claude Code `/plugin` Commands
 
-If you have a Claude Code marketplace configured:
+Two steps — register the marketplace, then install:
 
+**Step 1:** Add the marketplace (one-time):
 ```
-/plugin install github:Madhan230205/token-reducer
+/plugin marketplace add https://github.com/Madhan230205/token-reducer.git
+```
+
+**Step 2:** Install the plugin:
+```
+/plugin install token-reducer
 ```
 
 For project-scoped install:
-
 ```
-/plugin install github:Madhan230205/token-reducer --scope project
+/plugin install token-reducer --scope project
 ```
 
 ### Option 3 — Zero-Dependency Quick Start
