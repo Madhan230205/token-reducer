@@ -9,7 +9,7 @@
     "embeddingModel": "jinaai/jina-embeddings-v2-base-code",
     "embeddingFallbackBackend": "hash",
     "ftsCandidateCount": 12,
-    "vectorCandidateCount": 20,
+    "vectorCandidateCount": 10,
     "hybridMode": "fallback",
     "bm25Enabled": true,
     "annEngine": "hnsw",
@@ -17,8 +17,8 @@
     "annEfConstruction": 200,
     "annM": 16,
     "minFinalContexts": 3,
-    "maxFinalContexts": 5,
-    "compressionWordBudget": 350,
+    "maxFinalContexts": 3,
+    "compressionWordBudget": 200,
     "compressionMaxSelectedRatio": 0.6,
     "queryCacheTtlSeconds": 900,
     "sessionMemoryEnabled": true,
@@ -39,9 +39,13 @@
     "textRankDamping": 0.85,
     "textRankIterations": 30,
 
+    "embeddingApiEndpoint": "http://localhost:11434",
+
+    "pageRankEnabled": true,
+
     "lspFeatures": {
       "importGraphEnabled": true,
-      "twoHopExpansionEnabled": true,
+      "twoHopExpansionEnabled": false,
       "twoHopMaxExpansions": 5,
       "importedContextLimit": 2,
       "symbolIndexEnabled": true,
@@ -59,7 +63,8 @@
       "charNgramWeight": 0.35,
       "textRankWeight": 0.50,
       "queryRelevanceWeight": 0.35,
-      "importedFileBoost": 1.25
+      "importedFileBoost": 1.25,
+      "pageRankBoostWeight": 0.10
     },
 
     "embeddingCache": {

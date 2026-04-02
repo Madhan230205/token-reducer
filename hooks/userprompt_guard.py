@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -17,10 +18,10 @@ from typing import Any
 
 MAX_PROMPT_WORDS = 900
 MAX_PROMPT_LINES = 120
-HARD_TRUNCATE_WORDS = 1500
+HARD_TRUNCATE_WORDS = 800
 HARD_BLOCK_WORDS = 3000
-REMINDER_TURNS = {12, 20, 28, 36}
-AUTO_COMPACT_TURN = 25       # Strongly urge /compact at this turn
+REMINDER_TURNS = {5, 8, 10, 12, 15, 20, 28, 36}
+AUTO_COMPACT_TURN = 10       # Strongly urge /compact at this turn
 AUTO_RESET_TURN = 40         # Force-inject reset recommendation at this turn
 CRITICAL_RESET_TURN = 50     # Hard warning: session is dangerously long
 
@@ -128,16 +129,35 @@ def main() -> int:
             return 0
 
         if not bypass and word_count > HARD_TRUNCATE_WORDS:
-            # Hard truncate: cut to limit and warn
-            truncated_words = prompt.split()[:HARD_TRUNCATE_WORDS]
-            truncated_prompt = " ".join(truncated_words)
-            dropped = word_count - HARD_TRUNCATE_WORDS
+            # TPCH: Zero-Turn Auto-Compression — intercept before LLM sees the prompt
             messages.append(
-                f"✂️ Prompt TRUNCATED: {word_count} words exceeded the {HARD_TRUNCATE_WORDS}-word "
-                f"soft limit. Last {dropped} words were dropped (~{estimate_tokens(' '.join(prompt.split()[HARD_TRUNCATE_WORDS:]))} tokens saved). "
-                "Pass large content via --inputs and run /token-reducer for better results."
+                f"⚡ Auto-Compression Engaged: Intercepted {word_count} words "
+                f"(~{estimate_tokens(prompt)} tokens) before sending to the AI. "
+                "Compressing context to save tokens..."
             )
-            result["transformedPrompt"] = truncated_prompt
+            try:
+                pipeline_script = Path(plugin_root) / "scripts" / "context_pipeline.py"
+                process = subprocess.Popen(
+                    [sys.executable, str(pipeline_script), "compress-raw", "--word-budget", "600"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                compressed_packet, _ = process.communicate(input=prompt, timeout=30)
+                if process.returncode == 0 and compressed_packet.strip():
+                    saved = estimate_tokens(prompt) - estimate_tokens(compressed_packet)
+                    messages.append(f"✅ Compressed: saved ~{saved} tokens on Turn 1.")
+                    result["transformedPrompt"] = compressed_packet.strip()
+                else:
+                    raise RuntimeError("compression yielded empty output")
+            except Exception:
+                truncated_words = prompt.split()[:HARD_TRUNCATE_WORDS]
+                result["transformedPrompt"] = " ".join(truncated_words)
+                dropped = word_count - HARD_TRUNCATE_WORDS
+                messages.append(
+                    f"✂️ Prompt TRUNCATED: compression failed, dropped last {dropped} words."
+                )
 
         elif not bypass and (word_count > MAX_PROMPT_WORDS or line_count > MAX_PROMPT_LINES):
             messages.append(
@@ -160,7 +180,7 @@ def main() -> int:
         )
     elif turns == AUTO_COMPACT_TURN:
         messages.append(
-            "📦 AUTO-COMPACT SUGGESTED: You've reached 25 turns. Run /compact now to compress "
+            f"📦 AUTO-COMPACT SUGGESTED: You've reached {AUTO_COMPACT_TURN} turns. Run /compact now to compress "
             "conversation history and reclaim context window space. This keeps token-reducer effective."
         )
     elif turns in REMINDER_TURNS:
