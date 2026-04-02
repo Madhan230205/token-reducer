@@ -246,7 +246,8 @@ token-reducer/
 
 ## Contributing
 
-We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+If anyone is interested in contributing, this project is open to contributions.
+Please see [contribute.md](contribute.md) for contribution guidelines.
 
 ```bash
 git clone https://github.com/Madhan230205/token-reducer.git
