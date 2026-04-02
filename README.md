@@ -60,17 +60,19 @@ Every time you use Claude with a large codebase, you're paying for **thousands o
 /plugin marketplace add Madhan230205/token-reducer
 ```
 
+This registers the marketplace as `Madhan230205-token-reducer`.
+
 **Step 2:** Install:
 ```
-/plugin install token-reducer
+/plugin install token-reducer@Madhan230205-token-reducer
 ```
 
 For project-scoped install:
 ```
-/plugin install token-reducer --scope project
+/plugin install token-reducer@Madhan230205-token-reducer --scope project
 ```
 
-> **Already ran Step 1 before?** Just run `/plugin install token-reducer` — no need to add the marketplace again.
+> **Already ran Step 1 before?** Just run `/plugin install token-reducer@Madhan230205-token-reducer` — no need to add the marketplace again.
 
 ---
 
