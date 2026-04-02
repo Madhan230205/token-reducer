@@ -53,50 +53,68 @@ Every time you use Claude with a large codebase, you're paying for **thousands o
 
 ## Easy Install
 
-### Option 1 — Claude Code Marketplace (Recommended)
+### Option 1 — Git Clone (Recommended for Everyone)
 
-Install directly from Claude Code in one step:
+```bash
+# 1. Clone into your Claude plugins folder
+git clone https://github.com/Madhan230205/token-reducer.git ~/.claude/plugins/token-reducer
 
-```
-/plugin install Madhan230205/token-reducer
-```
-
-That's it. The plugin is now active.
-
-### Option 2 — Marketplace + Scoped Install
-
-Register the marketplace, then install:
-
-```
-/plugin marketplace add Madhan230205/token-reducer
+# 2. Install dependencies (optional but recommended for best results)
+pip install -r ~/.claude/plugins/token-reducer/requirements-optional.txt
 ```
 
-Then install the plugin:
+> **Windows users**: Replace `~/.claude/plugins/` with `%USERPROFILE%\.claude\plugins\`
 
-```
-/plugin install token-reducer
-```
+Then tell Claude Code where the plugin lives — open your `~/.claude/settings.json` and add:
 
-For team/project scope:
-
-```
-/plugin install token-reducer --scope project
+```json
+{
+  "plugins": ["~/.claude/plugins/token-reducer"]
+}
 ```
 
-### Option 3 — Manual (Git Clone)
+Restart Claude Code. Done.
+
+---
+
+**What `requirements-optional.txt` installs:**
+
+| Package | Purpose |
+|---------|---------|
+| `sentence-transformers` | Neural embeddings for smarter retrieval |
+| `hnswlib` / `faiss-cpu` | Fast approximate nearest-neighbor search |
+| `tree-sitter` + language grammars | AST-based code chunking (Python, JS, TS, Go, Rust, Java, C/C++, Ruby) |
+
+If you skip this step, Token Reducer still works using hash embeddings and regex chunking — no ML libraries required.
+
+---
+
+### Option 2 — Claude Code Marketplace
+
+If you have a Claude Code marketplace configured:
+
+```
+/plugin install github:Madhan230205/token-reducer
+```
+
+For project-scoped install:
+
+```
+/plugin install github:Madhan230205/token-reducer --scope project
+```
+
+### Option 3 — Zero-Dependency Quick Start
+
+No pip, no ML libs — runs immediately after cloning:
 
 ```bash
 git clone https://github.com/Madhan230205/token-reducer.git
 cd token-reducer
-pip install -r requirements-optional.txt   # optional: ML embeddings + tree-sitter
-```
-
-Then add to your Claude Code config:
-
-```json
-{
-  "plugins": ["./token-reducer"]
-}
+python scripts/context_pipeline.py run \
+  --inputs ./src \
+  --query "Find auth logic" \
+  --embedding-backend hash \
+  --db .cache/index.db
 ```
 
 ---
