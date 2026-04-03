@@ -3,7 +3,7 @@ name: Publish to PyPI
 on:
   push:
     tags:
-      - "v*"
+      - "v*.*.*"
 
 jobs:
   build:
@@ -14,6 +14,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Validate tag and metadata versions
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PYPROJECT_VERSION="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")"
+          PLUGIN_VERSION="$(python -c "import json; print(json.load(open('.claude-plugin/plugin.json', 'r', encoding='utf-8'))['version'])")"
+          MARKETPLACE_VERSION="$(python -c "import json; print(json.load(open('.claude-plugin/marketplace.json', 'r', encoding='utf-8'))['plugins'][0]['version'])")"
+
+          echo "Tag version: ${TAG_VERSION}"
+          echo "pyproject.toml version: ${PYPROJECT_VERSION}"
+          echo "plugin.json version: ${PLUGIN_VERSION}"
+          echo "marketplace.json plugin version: ${MARKETPLACE_VERSION}"
+
+          if [ "${TAG_VERSION}" != "${PYPROJECT_VERSION}" ] || [ "${TAG_VERSION}" != "${PLUGIN_VERSION}" ] || [ "${TAG_VERSION}" != "${MARKETPLACE_VERSION}" ]; then
+            echo "::error::Version mismatch. Ensure the Git tag and metadata versions are identical."
+            exit 1
+          fi
       - name: Install hatch
         run: pip install hatch
       - name: Build wheel and sdist
@@ -37,3 +53,29 @@ jobs:
           path: dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: Create GitHub Release
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Create release and upload artifacts
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} already exists. Skipping creation."
+            exit 0
+          fi
+
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --verify-tag \
+            --notes-file .github/release-intro.md \
+            --generate-notes

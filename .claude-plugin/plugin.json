@@ -1,7 +1,7 @@
 {
   "name": "token-reducer",
-  "version": "1.0.0",
-  "description": "Free, local-first Claude Code plugin that reduces token usage with BM25+hybrid retrieval, reranking, and compressed context packets.",
+  "version": "1.4.0",
+  "description": "Open-source, local-first Claude Code plugin for token reduction, context compression, and cost optimization using hybrid RAG retrieval (BM25 + vector search), reranking, AST-aware chunking, and compact context packets.",
   "author": {
     "name": "Madhan230205",
     "url": "https://github.com/Madhan230205"
@@ -10,12 +10,21 @@
   "repository": "https://github.com/Madhan230205/token-reducer",
   "license": "MIT",
   "keywords": [
-    "claude-code",
+    "claude-code-plugin",
     "token-reduction",
+    "context-compression",
     "context-optimization",
+    "prompt-cost-optimization",
     "rag",
-    "sqlite-fts",
+    "hybrid-retrieval",
+    "bm25",
+    "sqlite-fts5",
+    "tree-sitter",
+    "textrank",
     "embeddings",
+    "local-first",
+    "open-source",
+    "developer-tools",
     "context7"
   ]
 }

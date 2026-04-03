@@ -4,8 +4,28 @@ build-backend = "hatchling.build"
 
 [project]
 name = "token-reducer"
-version = "0.1.0"
-description = "Local-first context slimming pipeline for Claude Code — cuts token usage without losing signal."
+version = "1.4.0"
+description = "Open-source local-first context compression and token reduction pipeline for Claude Code with hybrid retrieval (BM25 + vectors), reranking, and AST-aware chunking."
+keywords = [
+    "claude-code",
+    "token-reduction",
+    "context-compression",
+    "hybrid-retrieval",
+    "bm25",
+    "tree-sitter",
+    "embeddings",
+    "rag",
+    "local-first",
+    "open-source",
+]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"

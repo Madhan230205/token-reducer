@@ -40,6 +40,32 @@ pip install -r requirements-optional.txt
 - [ ] Local checks pass for the modified area
 - [ ] PR description explains the problem, solution, and impact
 
+## Maintainer Release Process
+
+To keep Open Source releases consistent and easy to manage, this project uses **SemVer tags** in the format `vMAJOR.MINOR.PATCH`.
+
+1. Update `CHANGELOG.md` for the new version.
+2. Bump version metadata in:
+   - `pyproject.toml`
+   - `.claude-plugin/plugin.json`
+   - `.claude-plugin/marketplace.json` (`plugins[0].version`)
+3. Keep GitHub metadata up to date (when positioning changes):
+   - `.github/settings.yml` (repository description + topics)
+   - `.github/release-intro.md` (release intro + hashtags)
+4. Merge to `main`.
+5. Create and push an annotated release tag:
+
+```bash
+git tag -a vX.Y.Z -m "Release vX.Y.Z"
+git push origin vX.Y.Z
+```
+
+6. The publish workflow will automatically:
+   - validate tag/version consistency,
+   - build artifacts,
+   - publish to PyPI,
+   - create a GitHub Release with generated notes.
+
 ## Reporting Issues
 
 When filing an issue, include:

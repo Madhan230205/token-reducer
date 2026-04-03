@@ -5,15 +5,15 @@
     "name": "Madhan230205"
   },
   "metadata": {
-    "description": "Official marketplace for the token-reducer Claude Code plugin",
+    "description": "Official open-source marketplace for token-reducer, a local-first Claude Code plugin for token reduction, context compression, and hybrid RAG retrieval.",
     "homepage": "https://github.com/Madhan230205/token-reducer"
   },
   "plugins": [
     {
       "name": "token-reducer",
-      "version": "1.0.0",
+      "version": "1.4.0",
       "source": "./",
-      "description": "Local-first token reduction plugin for Claude Code with BM25 + hybrid retrieval and compressed context packets"
+      "description": "Open-source local-first token reduction plugin for Claude Code with BM25 + vector hybrid retrieval, reranking, AST chunking, and compressed context packets."
     }
   ]
 }

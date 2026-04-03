@@ -1,0 +1,16 @@
+repository:
+  description: "Open-source, local-first Claude Code plugin for token reduction and context compression using hybrid retrieval (BM25 + vectors), reranking, and AST-aware chunking."
+  homepage: "https://github.com/Madhan230205/token-reducer"
+  topics:
+    - claude-code
+    - claude-code-plugin
+    - token-reduction
+    - context-compression
+    - context-optimization
+    - hybrid-retrieval
+    - rag
+    - bm25
+    - tree-sitter
+    - sqlite
+    - local-first
+    - open-source
