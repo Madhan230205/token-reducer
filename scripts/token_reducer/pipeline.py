@@ -4,8 +4,8 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .config import MAX_QUERY_WORDS, MAX_QUERY_LINES
-from .models import utc_now_epoch, hash_text
+from .config import MAX_QUERY_WORDS, MAX_QUERY_LINES, DEFAULT_RELEVANCE_FLOOR
+from .models import utc_now_epoch, hash_text, ContextPacket, SessionMemory, CacheInfo
 from .db import (
     cleanup_query_cache,
     get_index_fingerprint,
@@ -57,7 +57,8 @@ def run_retrieval_pipeline(
     query_cache_ttl_seconds: int,
     dimensions: int,
     word_budget: int,
-) -> dict:
+    relevance_floor: float = DEFAULT_RELEVANCE_FLOOR,
+) -> ContextPacket:
     from .config import should_skip_vector_for_hash
 
     now_epoch = utc_now_epoch()
@@ -92,15 +93,19 @@ def run_retrieval_pipeline(
             query=query,
             selected_sources=[str(item.get("source")) for item in cached_result.get("candidates", []) if isinstance(item, dict)],
         )
-        cached_result["session_memory"] = {
-            "session_id": session_id,
-            "recent_queries": get_recent_session_queries(updated_memory, session_id=session_id, limit=4),
-        }
-        cached_result.setdefault("cache", {})
-        cached_result["cache"]["hit"] = True
-        cached_result["cache"]["key"] = query_cache_key
-        cached_result["cache"].setdefault("ttl_seconds", query_cache_ttl_seconds)
-        return cached_result
+        # Reconstruct ContextPacket from cached dict
+        cached_packet = ContextPacket.model_validate(cached_result)
+        cached_packet.session_memory = SessionMemory(
+            session_id=session_id,
+            recent_queries=get_recent_session_queries(updated_memory, session_id=session_id, limit=4),
+        )
+        if cached_packet.cache is None:
+            cached_packet.cache = CacheInfo()
+        cached_packet.cache.hit = True
+        cached_packet.cache.key = query_cache_key
+        if cached_packet.cache.ttl_seconds == 0:
+            cached_packet.cache.ttl_seconds = query_cache_ttl_seconds
+        return cached_packet
 
     fts_hits = fts_retrieve(conn, query, limit=fts_k)
     vector_hits = []
@@ -146,7 +151,12 @@ def run_retrieval_pipeline(
         vector_hits=vector_hits,
         top_k=top_k,
     )
-    bullets = compress_candidates(query=query, candidates=selected, word_budget=word_budget)
+    bullets = compress_candidates(
+        query=query,
+        candidates=selected,
+        word_budget=word_budget,
+        relevance_floor=relevance_floor,
+    )
 
     packet = build_packet(
         query=query,
@@ -169,19 +179,20 @@ def run_retrieval_pipeline(
         query=query,
         selected_sources=[c.source for c in selected],
     )
-    packet["session_memory"] = {
-        "session_id": session_id,
-        "recent_queries": get_recent_session_queries(updated_memory, session_id=session_id, limit=4),
-    }
-    packet.setdefault("cache", {})
-    packet["cache"]["hit"] = False
-    packet["cache"]["key"] = query_cache_key
-    packet["cache"]["ttl_seconds"] = query_cache_ttl_seconds
+    packet.session_memory = SessionMemory(
+        session_id=session_id,
+        recent_queries=get_recent_session_queries(updated_memory, session_id=session_id, limit=4),
+    )
+    packet.cache = CacheInfo(
+        hit=False,
+        key=query_cache_key,
+        ttl_seconds=query_cache_ttl_seconds,
+    )
 
     set_cached_query_result(
         conn=conn,
         cache_key=query_cache_key,
-        payload=packet,
+        payload=packet.model_dump(),
         now_epoch=now_epoch,
         ttl_seconds=query_cache_ttl_seconds,
     )

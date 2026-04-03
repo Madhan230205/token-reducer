@@ -355,8 +355,9 @@ def rerank_candidates(
         item.final_score = (final_fts_w * item.fts_score) + (final_vector_w * item.vector_score) + (final_overlap_w * item.overlap_score)
 
     ranked.sort(key=lambda c: c.final_score, reverse=True)
-    bounded_top_k = max(3, min(top_k, 5))
-    return ranked[:bounded_top_k], ranked
+    # Allow full top_k pool to pass to the compressor;
+    # relevance floor in compressor will filter low-quality chunks
+    return ranked[:top_k], ranked
 
 
 def get_query_embedding(

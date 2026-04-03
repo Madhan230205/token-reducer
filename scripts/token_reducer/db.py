@@ -44,7 +44,9 @@ def connect_db(db_path: Path) -> sqlite3.Connection:
                 raw_text TEXT NOT NULL,
                 cleaned_text TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                file_mtime REAL,
+                file_hash TEXT
             );
 
             CREATE TABLE IF NOT EXISTS chunks (
@@ -138,6 +140,8 @@ def connect_db(db_path: Path) -> sqlite3.Connection:
             "ALTER TABLE chunk_embeddings ADD COLUMN backend TEXT NOT NULL DEFAULT 'hash'",
             "ALTER TABLE chunk_embeddings ADD COLUMN dimensions INTEGER NOT NULL DEFAULT 256",
             "ALTER TABLE chunk_embeddings ADD COLUMN model_name TEXT",
+            "ALTER TABLE documents ADD COLUMN file_mtime REAL",
+            "ALTER TABLE documents ADD COLUMN file_hash TEXT",
         ):
             try:
                 conn.execute(statement)
@@ -688,3 +692,270 @@ def fetch_imported_context(
                 )
 
     return additional_candidates
+
+
+# ---------------------------------------------------------------------------
+# Context Lifecycle Management Functions
+# ---------------------------------------------------------------------------
+
+
+def get_index_stats(conn: sqlite3.Connection) -> dict:
+    """Get comprehensive statistics about the index."""
+    doc_count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+    chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+    embedding_count = conn.execute("SELECT COUNT(*) FROM chunk_embeddings").fetchone()[0]
+    cache_count = conn.execute("SELECT COUNT(*) FROM query_cache").fetchone()[0]
+    query_emb_count = conn.execute("SELECT COUNT(*) FROM query_embeddings").fetchone()[0]
+    symbol_count = conn.execute("SELECT COUNT(*) FROM symbol_index").fetchone()[0]
+    dep_count = conn.execute("SELECT COUNT(*) FROM file_dependencies").fetchone()[0]
+
+    # Get oldest and newest document timestamps
+    date_row = conn.execute(
+        "SELECT MIN(created_at), MAX(updated_at) FROM documents"
+    ).fetchone()
+    oldest_doc = date_row[0] if date_row else None
+    newest_doc = date_row[1] if date_row else None
+
+    # Get embedding backend distribution
+    backend_rows = conn.execute(
+        "SELECT backend, COUNT(*) FROM chunk_embeddings GROUP BY backend"
+    ).fetchall()
+    backends = {row[0]: row[1] for row in backend_rows}
+
+    return {
+        "documents": doc_count,
+        "chunks": chunk_count,
+        "embeddings": embedding_count,
+        "query_cache_entries": cache_count,
+        "query_embeddings": query_emb_count,
+        "symbols": symbol_count,
+        "file_dependencies": dep_count,
+        "oldest_document": oldest_doc,
+        "newest_document": newest_doc,
+        "embedding_backends": backends,
+    }
+
+
+def get_indexed_files(conn: sqlite3.Connection) -> dict[str, tuple[float | None, str | None]]:
+    """Get all indexed files with their mtime and hash."""
+    rows = conn.execute(
+        "SELECT source, file_mtime, file_hash FROM documents"
+    ).fetchall()
+    return {row[0]: (row[1], row[2]) for row in rows}
+
+
+def detect_file_changes(
+    conn: sqlite3.Connection,
+    file_paths: list[Path],
+) -> tuple[list[Path], list[Path], list[str]]:
+    """Detect new, modified, and deleted files compared to index.
+
+    Returns:
+        Tuple of (new_files, modified_files, deleted_sources)
+    """
+    indexed = get_indexed_files(conn)
+    indexed_sources = set(indexed.keys())
+
+    new_files: list[Path] = []
+    modified_files: list[Path] = []
+
+    for path in file_paths:
+        source = str(path)
+        if source not in indexed_sources:
+            new_files.append(path)
+        else:
+            stored_mtime, stored_hash = indexed[source]
+            try:
+                current_mtime = path.stat().st_mtime
+                if stored_mtime is None or current_mtime > stored_mtime:
+                    modified_files.append(path)
+            except OSError:
+                # File may have been deleted or is inaccessible
+                continue
+
+    # Find deleted files (in index but not in provided file list)
+    current_sources = {str(p) for p in file_paths}
+    deleted_sources = [s for s in indexed_sources if s not in current_sources]
+
+    return new_files, modified_files, deleted_sources
+
+
+def remove_documents_by_source(conn: sqlite3.Connection, sources: list[str]) -> int:
+    """Remove documents and their associated data by source path."""
+    if not sources:
+        return 0
+
+    removed = 0
+    for source in sources:
+        doc_row = conn.execute(
+            "SELECT id FROM documents WHERE source = ?", (source,)
+        ).fetchone()
+        if doc_row:
+            doc_id = doc_row[0]
+            # Get chunk IDs for cleanup
+            chunk_rows = conn.execute(
+                "SELECT id FROM chunks WHERE document_id = ?", (doc_id,)
+            ).fetchall()
+            for chunk_row in chunk_rows:
+                cid = chunk_row[0]
+                conn.execute("DELETE FROM chunk_embeddings WHERE chunk_id = ?", (cid,))
+                conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (cid,))
+            conn.execute("DELETE FROM chunks WHERE document_id = ?", (doc_id,))
+            conn.execute("DELETE FROM symbol_index WHERE file_path = ?", (source,))
+            conn.execute("DELETE FROM file_dependencies WHERE source_file = ?", (source,))
+            conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+            removed += 1
+
+    conn.commit()
+    return removed
+
+
+def garbage_collect(
+    conn: sqlite3.Connection,
+    max_cache_age_seconds: int = 86400,  # 24 hours default
+    dry_run: bool = False,
+) -> dict:
+    """Perform garbage collection on the database.
+
+    Cleans up:
+    - Orphaned chunks (no parent document)
+    - Orphaned embeddings (no parent chunk)
+    - Expired query cache entries
+    - Stale session memory entries
+
+    Returns statistics about what was (or would be) cleaned.
+    """
+    stats = {
+        "orphaned_chunks": 0,
+        "orphaned_embeddings": 0,
+        "expired_cache_entries": 0,
+        "stale_query_embeddings": 0,
+        "orphaned_symbols": 0,
+        "orphaned_dependencies": 0,
+    }
+
+    # Find orphaned chunks (chunks without documents)
+    orphan_chunks = conn.execute(
+        """
+        SELECT COUNT(*) FROM chunks c
+        WHERE NOT EXISTS (SELECT 1 FROM documents d WHERE d.id = c.document_id)
+        """
+    ).fetchone()[0]
+    stats["orphaned_chunks"] = orphan_chunks
+
+    # Find orphaned embeddings (embeddings without chunks)
+    orphan_embeddings = conn.execute(
+        """
+        SELECT COUNT(*) FROM chunk_embeddings ce
+        WHERE NOT EXISTS (SELECT 1 FROM chunks c WHERE c.id = ce.chunk_id)
+        """
+    ).fetchone()[0]
+    stats["orphaned_embeddings"] = orphan_embeddings
+
+    # Find expired cache entries
+    now_epoch = utc_now_epoch()
+    expired_cache = conn.execute(
+        "SELECT COUNT(*) FROM query_cache WHERE expires_at_epoch <= ?",
+        (now_epoch,)
+    ).fetchone()[0]
+    stats["expired_cache_entries"] = expired_cache
+
+    # Find orphaned symbols (symbols referencing non-existent files)
+    orphan_symbols = conn.execute(
+        """
+        SELECT COUNT(*) FROM symbol_index si
+        WHERE NOT EXISTS (SELECT 1 FROM documents d WHERE d.source = si.file_path)
+        """
+    ).fetchone()[0]
+    stats["orphaned_symbols"] = orphan_symbols
+
+    # Find orphaned dependencies
+    orphan_deps = conn.execute(
+        """
+        SELECT COUNT(*) FROM file_dependencies fd
+        WHERE NOT EXISTS (SELECT 1 FROM documents d WHERE d.source = fd.source_file)
+        """
+    ).fetchone()[0]
+    stats["orphaned_dependencies"] = orphan_deps
+
+    if not dry_run:
+        # Delete orphaned chunks
+        conn.execute(
+            """
+            DELETE FROM chunks WHERE id IN (
+                SELECT c.id FROM chunks c
+                WHERE NOT EXISTS (SELECT 1 FROM documents d WHERE d.id = c.document_id)
+            )
+            """
+        )
+
+        # Delete orphaned embeddings
+        conn.execute(
+            """
+            DELETE FROM chunk_embeddings WHERE chunk_id IN (
+                SELECT ce.chunk_id FROM chunk_embeddings ce
+                WHERE NOT EXISTS (SELECT 1 FROM chunks c WHERE c.id = ce.chunk_id)
+            )
+            """
+        )
+
+        # Delete expired cache entries
+        conn.execute(
+            "DELETE FROM query_cache WHERE expires_at_epoch <= ?",
+            (now_epoch,)
+        )
+
+        # Delete orphaned symbols
+        conn.execute(
+            """
+            DELETE FROM symbol_index WHERE id IN (
+                SELECT si.id FROM symbol_index si
+                WHERE NOT EXISTS (SELECT 1 FROM documents d WHERE d.source = si.file_path)
+            )
+            """
+        )
+
+        # Delete orphaned dependencies
+        conn.execute(
+            """
+            DELETE FROM file_dependencies WHERE id IN (
+                SELECT fd.id FROM file_dependencies fd
+                WHERE NOT EXISTS (SELECT 1 FROM documents d WHERE d.source = fd.source_file)
+            )
+            """
+        )
+
+        conn.commit()
+
+    return stats
+
+
+def vacuum_database(conn: sqlite3.Connection) -> None:
+    """Vacuum the database to reclaim space."""
+    conn.execute("VACUUM")
+
+
+def get_database_size(db_path: Path) -> int:
+    """Get the database file size in bytes."""
+    if db_path.exists() and db_path.name != ":memory:":
+        return db_path.stat().st_size
+    return 0
+
+
+def update_document_mtime(
+    conn: sqlite3.Connection,
+    source: str,
+    mtime: float,
+    file_hash: str | None = None,
+) -> None:
+    """Update the mtime and hash for a document."""
+    if file_hash:
+        conn.execute(
+            "UPDATE documents SET file_mtime = ?, file_hash = ? WHERE source = ?",
+            (mtime, file_hash, source),
+        )
+    else:
+        conn.execute(
+            "UPDATE documents SET file_mtime = ? WHERE source = ?",
+            (mtime, source),
+        )

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 import tempfile
 from pathlib import Path
+from typing import Annotated, Optional
+
+import typer
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn
 
 # Ensure stdout is UTF-8 on Windows (avoids cp1252 UnicodeEncodeError for emoji/symbols)
 if hasattr(sys.stdout, "reconfigure"):
@@ -39,196 +43,280 @@ from .chunker import (
     estimate_tokens,
 )
 from .embeddings import resolve_embedding_backend
-from .db import upsert_document
+from .db import (
+    upsert_document,
+    get_index_stats,
+    detect_file_changes,
+    remove_documents_by_source,
+    garbage_collect,
+    vacuum_database,
+    get_database_size,
+    update_document_mtime,
+)
+
+app = typer.Typer(
+    name="token-reducer",
+    help="Local-first context slimming pipeline for Claude Code — cuts token usage without losing signal.",
+    rich_markup_mode="rich",
+    no_args_is_help=True,
+)
+err = Console(stderr=True)
+
+# ---------------------------------------------------------------------------
+# Shared option types
+# ---------------------------------------------------------------------------
+
+DbOpt = Annotated[str, typer.Option("--db", help="SQLite index path.")]
+ChunkSizeOpt = Annotated[int, typer.Option("--chunk-size")]
+OverlapOpt = Annotated[int, typer.Option("--overlap")]
+TopKOpt = Annotated[int, typer.Option("--top-k")]
+FtsKOpt = Annotated[int, typer.Option("--fts-k")]
+VectorKOpt = Annotated[int, typer.Option("--vector-k")]
+MinFtsHitsOpt = Annotated[int, typer.Option("--min-fts-hits")]
+HybridModeOpt = Annotated[str, typer.Option("--hybrid-mode", help="always | fallback")]
+EmbBackendOpt = Annotated[str, typer.Option("--embedding-backend", help="hash | ml")]
+EmbModelOpt = Annotated[Optional[str], typer.Option("--embedding-model")]
+DimensionsOpt = Annotated[int, typer.Option("--dimensions")]
+SessionOpt = Annotated[str, typer.Option("--session-id")]
+CacheTtlOpt = Annotated[int, typer.Option("--query-cache-ttl")]
+WordBudgetOpt = Annotated[int, typer.Option("--word-budget")]
+ModeOpt = Annotated[str, typer.Option("--mode", help="compact | deep-debug")]
+JsonOpt = Annotated[bool, typer.Option("--json", help="Output full JSON result.")]
 
 
-def cmd_index(args: argparse.Namespace) -> int:
-    db_path = Path(args.db).expanduser().resolve()
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def index(
+    inputs: Annotated[list[str], typer.Option("--inputs", help="Files or directories to index.")],
+    db: DbOpt = str(DEFAULT_DB_PATH),
+    chunk_size: ChunkSizeOpt = DEFAULT_CHUNK_SIZE,
+    overlap: OverlapOpt = DEFAULT_CHUNK_OVERLAP,
+    embedding_backend: EmbBackendOpt = DEFAULT_EMBEDDING_BACKEND,
+    embedding_model: EmbModelOpt = DEFAULT_EMBEDDING_MODEL,
+    dimensions: DimensionsOpt = DEFAULT_DIMENSIONS,
+) -> None:
+    """Preprocess and index input files into the local SQLite store."""
+    db_path = Path(db).expanduser().resolve()
     conn = connect_db(db_path)
     try:
-        files = collect_input_files(args.inputs)
+        files = collect_input_files(inputs)
         if not files:
-            print("No indexable files found.", file=sys.stderr)
-            return 1
+            err.print("[red]No indexable files found.[/red]")
+            raise typer.Exit(1)
 
-        embedding_backend, embedding_model = resolve_embedding_backend(
-            requested_backend=args.embedding_backend,
-            requested_model=args.embedding_model,
+        backend, model = resolve_embedding_backend(
+            requested_backend=embedding_backend,
+            requested_model=embedding_model,
         )
-        chunk_size_words, overlap_words = normalize_chunking(args.chunk_size, args.overlap)
+        chunk_size_words, overlap_words = normalize_chunking(chunk_size, overlap)
 
-        stats = index_corpus(
-            conn=conn,
-            file_paths=files,
-            chunk_size_words=chunk_size_words,
-            overlap_words=overlap_words,
-            dimensions=args.dimensions,
-            embedding_backend=embedding_backend,
-            embedding_model=embedding_model,
-        )
+        with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=err) as progress:
+            progress.add_task(f"Indexing {len(files)} file(s)…")
+            stats = index_corpus(
+                conn=conn,
+                file_paths=files,
+                chunk_size_words=chunk_size_words,
+                overlap_words=overlap_words,
+                dimensions=dimensions,
+                embedding_backend=backend,
+                embedding_model=model,
+            )
 
         inferred_dims = infer_embedding_dimensions(
-            conn=conn,
-            backend=embedding_backend,
-            model_name=embedding_model,
-            fallback_dimensions=args.dimensions,
+            conn=conn, backend=backend, model_name=model, fallback_dimensions=dimensions
         )
         ann_built = build_hnsw_index(
-            conn=conn,
-            db_path=db_path,
-            backend=embedding_backend,
-            dimensions=inferred_dims,
-            model_name=embedding_model,
+            conn=conn, db_path=db_path, backend=backend, dimensions=inferred_dims, model_name=model
         )
 
-        print(
+        typer.echo(
             json.dumps(
                 {
                     "db": str(db_path),
                     "files_indexed": stats["files_indexed"],
                     "chunks_indexed": stats["chunks_indexed"],
-                    "embedding_backend": embedding_backend,
-                    "embedding_model": embedding_model,
+                    "embedding_backend": backend,
+                    "embedding_model": model,
                     "ann_engine": DEFAULT_ANN_ENGINE,
                     "ann_index_built": ann_built,
                 },
                 indent=2,
             )
         )
-        return 0
     finally:
         conn.close()
 
 
-def cmd_query(args: argparse.Namespace) -> int:
-    db_path = Path(args.db).expanduser().resolve()
+@app.command()
+def query(
+    query_text: Annotated[str, typer.Option("--query", help="Question or objective.")],
+    db: DbOpt = str(DEFAULT_DB_PATH),
+    top_k: TopKOpt = DEFAULT_TOP_K,
+    fts_k: FtsKOpt = DEFAULT_FTS_K,
+    vector_k: VectorKOpt = DEFAULT_VECTOR_K,
+    min_fts_hits: MinFtsHitsOpt = DEFAULT_MIN_FTS_HITS,
+    mode: ModeOpt = DEFAULT_RETRIEVAL_MODE,
+    hybrid_mode: HybridModeOpt = DEFAULT_HYBRID_MODE,
+    embedding_backend: EmbBackendOpt = DEFAULT_EMBEDDING_BACKEND,
+    embedding_model: EmbModelOpt = DEFAULT_EMBEDDING_MODEL,
+    dimensions: DimensionsOpt = DEFAULT_DIMENSIONS,
+    session_id: SessionOpt = "default",
+    query_cache_ttl: CacheTtlOpt = DEFAULT_QUERY_CACHE_TTL_SECONDS,
+    word_budget: WordBudgetOpt = DEFAULT_WORD_BUDGET,
+    output_json: JsonOpt = False,
+) -> None:
+    """Retrieve and compress context from an existing index."""
+    db_path = Path(db).expanduser().resolve()
     conn = connect_db(db_path)
     try:
-        query_ok, query_error = validate_query_input(args.query)
+        query_ok, query_error = validate_query_input(query_text)
         if not query_ok:
-            print(query_error, file=sys.stderr)
-            return 2
+            err.print(f"[red]{query_error}[/red]")
+            raise typer.Exit(2)
 
-        embedding_backend, embedding_model = resolve_embedding_backend(
-            requested_backend=args.embedding_backend,
-            requested_model=args.embedding_model,
+        backend, model = resolve_embedding_backend(
+            requested_backend=embedding_backend, requested_model=embedding_model
         )
 
         result = run_retrieval_pipeline(
             conn=conn,
             db_path=db_path,
-            query=args.query,
-            top_k=args.top_k,
-            fts_k=args.fts_k,
-            vector_k=args.vector_k,
-            min_fts_hits=args.min_fts_hits,
-            hybrid_mode=args.hybrid_mode,
-            retrieval_mode=args.mode,
-            embedding_backend=embedding_backend,
-            embedding_model=embedding_model,
-            session_id=args.session_id,
-            query_cache_ttl_seconds=args.query_cache_ttl,
-            dimensions=args.dimensions,
-            word_budget=args.word_budget,
+            query=query_text,
+            top_k=top_k,
+            fts_k=fts_k,
+            vector_k=vector_k,
+            min_fts_hits=min_fts_hits,
+            hybrid_mode=hybrid_mode,
+            retrieval_mode=mode,
+            embedding_backend=backend,
+            embedding_model=model,
+            session_id=session_id,
+            query_cache_ttl_seconds=query_cache_ttl,
+            dimensions=dimensions,
+            word_budget=word_budget,
         )
 
-        print(json.dumps(result, indent=2) if args.json else result["packet"])
-        return 0
+        typer.echo(json.dumps(result.model_dump(), indent=2) if output_json else result.packet)
     finally:
         conn.close()
 
 
-def cmd_run(args: argparse.Namespace) -> int:
-    db_path = Path(args.db).expanduser().resolve()
+@app.command()
+def run(
+    query_text: Annotated[str, typer.Option("--query", help="Question or objective.")],
+    inputs: Annotated[list[str], typer.Option("--inputs", help="Files or directories to index first.")] = [],  # noqa: B006
+    db: DbOpt = str(DEFAULT_DB_PATH),
+    chunk_size: ChunkSizeOpt = DEFAULT_CHUNK_SIZE,
+    overlap: OverlapOpt = DEFAULT_CHUNK_OVERLAP,
+    top_k: TopKOpt = DEFAULT_TOP_K,
+    fts_k: FtsKOpt = DEFAULT_FTS_K,
+    vector_k: VectorKOpt = DEFAULT_VECTOR_K,
+    min_fts_hits: MinFtsHitsOpt = DEFAULT_MIN_FTS_HITS,
+    mode: ModeOpt = DEFAULT_RETRIEVAL_MODE,
+    hybrid_mode: HybridModeOpt = DEFAULT_HYBRID_MODE,
+    embedding_backend: EmbBackendOpt = DEFAULT_EMBEDDING_BACKEND,
+    embedding_model: EmbModelOpt = DEFAULT_EMBEDDING_MODEL,
+    dimensions: DimensionsOpt = DEFAULT_DIMENSIONS,
+    session_id: SessionOpt = "default",
+    query_cache_ttl: CacheTtlOpt = DEFAULT_QUERY_CACHE_TTL_SECONDS,
+    word_budget: WordBudgetOpt = DEFAULT_WORD_BUDGET,
+    output_json: JsonOpt = False,
+) -> None:
+    """End-to-end: optionally index files, then retrieve and compress."""
+    db_path = Path(db).expanduser().resolve()
     conn = connect_db(db_path)
     try:
-        query_ok, query_error = validate_query_input(args.query)
+        query_ok, query_error = validate_query_input(query_text)
         if not query_ok:
-            print(query_error, file=sys.stderr)
-            return 2
+            err.print(f"[red]{query_error}[/red]")
+            raise typer.Exit(2)
 
-        embedding_backend, embedding_model = resolve_embedding_backend(
-            requested_backend=args.embedding_backend,
-            requested_model=args.embedding_model,
+        backend, model = resolve_embedding_backend(
+            requested_backend=embedding_backend, requested_model=embedding_model
         )
+        chunk_size_words, overlap_words = normalize_chunking(chunk_size, overlap)
 
-        chunk_size_words, overlap_words = normalize_chunking(args.chunk_size, args.overlap)
-
-        if args.inputs:
-            files = collect_input_files(args.inputs)
+        if inputs:
+            files = collect_input_files(inputs)
             if not files:
-                print("No indexable files found for run mode.", file=sys.stderr)
-                return 1
-            index_corpus(
-                conn=conn,
-                file_paths=files,
-                chunk_size_words=chunk_size_words,
-                overlap_words=overlap_words,
-                dimensions=args.dimensions,
-                embedding_backend=embedding_backend,
-                embedding_model=embedding_model,
-            )
-            # Only build ANN index for large codebases; it's unnecessary overhead
-            # for small/medium projects and significantly slows down the pipeline.
+                err.print("[red]No indexable files found for run mode.[/red]")
+                raise typer.Exit(1)
+
+            with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=err) as progress:
+                progress.add_task(f"Indexing {len(files)} file(s)…")
+                index_corpus(
+                    conn=conn,
+                    file_paths=files,
+                    chunk_size_words=chunk_size_words,
+                    overlap_words=overlap_words,
+                    dimensions=dimensions,
+                    embedding_backend=backend,
+                    embedding_model=model,
+                )
+
             adaptive_tier = infer_retrieval_tier(conn)
             if adaptive_tier == "full_hybrid":
                 inferred_dims = infer_embedding_dimensions(
-                    conn=conn,
-                    backend=embedding_backend,
-                    model_name=embedding_model,
-                    fallback_dimensions=args.dimensions,
+                    conn=conn, backend=backend, model_name=model, fallback_dimensions=dimensions
                 )
                 build_hnsw_index(
-                    conn=conn,
-                    db_path=db_path,
-                    backend=embedding_backend,
-                    dimensions=inferred_dims,
-                    model_name=embedding_model,
+                    conn=conn, db_path=db_path, backend=backend,
+                    dimensions=inferred_dims, model_name=model,
                 )
             else:
-                print(
-                    f"[info] Adaptive tier '{adaptive_tier}' — skipping ANN index build (FTS5 is sufficient).",
-                    file=sys.stderr,
+                err.print(
+                    f"[dim][info] Adaptive tier '{adaptive_tier}' \u2014 skipping ANN index build (FTS5 is sufficient).[/dim]"
                 )
 
         result = run_retrieval_pipeline(
             conn=conn,
             db_path=db_path,
-            query=args.query,
-            top_k=args.top_k,
-            fts_k=args.fts_k,
-            vector_k=args.vector_k,
-            min_fts_hits=args.min_fts_hits,
-            hybrid_mode=args.hybrid_mode,
-            retrieval_mode=args.mode,
-            embedding_backend=embedding_backend,
-            embedding_model=embedding_model,
-            session_id=args.session_id,
-            query_cache_ttl_seconds=args.query_cache_ttl,
-            dimensions=args.dimensions,
-            word_budget=args.word_budget,
+            query=query_text,
+            top_k=top_k,
+            fts_k=fts_k,
+            vector_k=vector_k,
+            min_fts_hits=min_fts_hits,
+            hybrid_mode=hybrid_mode,
+            retrieval_mode=mode,
+            embedding_backend=backend,
+            embedding_model=model,
+            session_id=session_id,
+            query_cache_ttl_seconds=query_cache_ttl,
+            dimensions=dimensions,
+            word_budget=word_budget,
         )
 
-        print(json.dumps(result, indent=2) if args.json else result["packet"])
-        return 0
+        typer.echo(json.dumps(result.model_dump(), indent=2) if output_json else result.packet)
     finally:
         conn.close()
 
 
-def cmd_compress_raw(args: argparse.Namespace) -> int:
-    """Zero-Turn compression: read raw text from stdin, compress it, output the packet.
+@app.command("compress-raw")
+def compress_raw(
+    query_text: Annotated[str, typer.Option("--query", help="Optional query to focus compression.")] = "",
+    chunk_size: ChunkSizeOpt = DEFAULT_CHUNK_SIZE,
+    overlap: OverlapOpt = DEFAULT_CHUNK_OVERLAP,
+    dimensions: DimensionsOpt = DEFAULT_DIMENSIONS,
+    top_k: TopKOpt = 5,
+    fts_k: FtsKOpt = 12,
+    word_budget: WordBudgetOpt = 500,
+) -> None:
+    """Zero-Turn compression: read raw text from stdin and output a context packet.
 
-    Used by userprompt_guard.py to transparently intercept large prompts before
-    they reach the LLM context window (Transparent Pre-Compression Hook / TPCH).
+    Used by userprompt_guard.py (Transparent Pre-Compression Hook / TPCH).
     """
     raw_text = sys.stdin.read()
     if not raw_text.strip():
-        return 0
+        return
 
     db_path = Path(":memory:")
     conn = connect_db(db_path)
     try:
-        chunk_size_words, overlap_words = normalize_chunking(args.chunk_size, args.overlap)
+        chunk_size_words, overlap_words = normalize_chunking(chunk_size, overlap)
         cleaned = clean_text(raw_text)
         upsert_document(
             conn=conn,
@@ -237,20 +325,20 @@ def cmd_compress_raw(args: argparse.Namespace) -> int:
             cleaned_text=cleaned,
             chunk_size_words=chunk_size_words,
             overlap_words=overlap_words,
-            dimensions=args.dimensions,
+            dimensions=dimensions,
             embedding_backend="hash",
             embedding_model=None,
         )
         conn.commit()
 
-        query = args.query if args.query.strip() else " ".join(raw_text.split()[:50])
+        effective_query = query_text.strip() or " ".join(raw_text.split()[:50])
 
         result = run_retrieval_pipeline(
             conn=conn,
             db_path=db_path,
-            query=query,
-            top_k=args.top_k,
-            fts_k=args.fts_k,
+            query=effective_query,
+            top_k=top_k,
+            fts_k=fts_k,
             vector_k=0,
             min_fts_hits=1,
             hybrid_mode="fallback",
@@ -259,83 +347,180 @@ def cmd_compress_raw(args: argparse.Namespace) -> int:
             embedding_model=None,
             session_id="auto",
             query_cache_ttl_seconds=0,
-            dimensions=args.dimensions,
-            word_budget=args.word_budget,
+            dimensions=dimensions,
+            word_budget=word_budget,
         )
 
-        print(result["packet"])
-        return 0
+        typer.echo(result.packet)
     finally:
         conn.close()
 
 
-def cmd_benchmark(args: argparse.Namespace) -> int:
-    """Run comprehensive benchmarks and generate metrics report."""
+@app.command("self-test")
+def self_test() -> None:
+    """Run internal checks for BM25+hybrid retrieval and token reduction behaviour."""
+    from .db import index_corpus as _index_corpus
+    from .chunker import collect_input_files as _collect_input_files
+
+    with tempfile.TemporaryDirectory(prefix="token-reducer-self-test-") as tmp_dir:
+        root = Path(tmp_dir)
+        db_path = root / "index.db"
+
+        sample_files = {
+            "auth_middleware.md": (
+                "The authentication middleware checks JWT tokens in cookies.\n"
+                "If the token is invalid, the middleware redirects to /login.\n"
+                "It runs before protected route handlers.\n"
+            ),
+            "session_guard.md": (
+                "Authorization guard validates session credentials prior to route execution.\n"
+                "The guard denies unauthorized access and records audit logs.\n"
+            ),
+            "unrelated_notes.md": (
+                "CSS palette and typography notes for landing page.\n"
+                "Icon sizing and spacing guidance for components.\n"
+            ),
+        }
+
+        for name, content in sample_files.items():
+            (root / name).write_text(content, encoding="utf-8")
+
+        conn = connect_db(db_path)
+        try:
+            files = _collect_input_files([str(root)])
+            _index_corpus(
+                conn=conn,
+                file_paths=files,
+                chunk_size_words=DEFAULT_CHUNK_SIZE,
+                overlap_words=DEFAULT_CHUNK_OVERLAP,
+                dimensions=DEFAULT_DIMENSIONS,
+                embedding_backend="hash",
+                embedding_model=None,
+            )
+            _query = "How does middleware validate auth tokens before protected routes?"
+            _pipeline_kwargs = dict(
+                conn=conn,
+                db_path=db_path,
+                query=_query,
+                top_k=5,
+                fts_k=8,
+                vector_k=8,
+                min_fts_hits=DEFAULT_MIN_FTS_HITS,
+                hybrid_mode="always",
+                retrieval_mode="compact",
+                embedding_backend="hash",
+                embedding_model=None,
+                session_id="self-test",
+                query_cache_ttl_seconds=DEFAULT_QUERY_CACHE_TTL_SECONDS,
+                dimensions=DEFAULT_DIMENSIONS,
+                word_budget=DEFAULT_WORD_BUDGET,
+            )
+            result = run_retrieval_pipeline(**_pipeline_kwargs)
+            result_repeat = run_retrieval_pipeline(**_pipeline_kwargs)
+        finally:
+            conn.close()
+
+    # Convert to dict for easier access in checks
+    result_dict = result.model_dump()
+    result_repeat_dict = result_repeat.model_dump()
+
+    vector_retrieval_path = str(result_dict["retrieval"].get("vector_retrieval_path", ""))
+    vector_hits = int(result_dict["retrieval"]["vector_hits"])
+    vector_hits_expected = vector_retrieval_path not in {
+        "disabled",
+        "disabled_small_codebase",
+        "skipped_hash_backend",
+    }
+
+    checks = {
+        "bm25_enabled": bool(result_dict["retrieval"]["bm25_enabled"]),
+        "fts_hits_gt_zero": int(result_dict["retrieval"]["fts_hits"]) > 0,
+        "vector_hits_valid_for_mode": (vector_hits > 0) if vector_hits_expected else True,
+        "selected_chunks_le_top_k": int(result_dict["selected_chunks"]) <= DEFAULT_TOP_K,
+        "compressed_le_selected_tokens": (
+            int(result_dict["token_metrics"]["compressed_tokens"])
+            <= int(result_dict["token_metrics"]["selected_chunk_tokens"])
+        ),
+        "cache_hit_on_repeat": bool(result_repeat_dict.get("cache", {}).get("hit", False)),
+        "session_memory_present": bool(result_repeat_dict.get("session_memory", {}).get("recent_queries")),
+    }
+
+    ok = all(checks.values())
+    summary = {
+        "ok": ok,
+        "checks": checks,
+        "retrieval": result_dict["retrieval"],
+        "token_metrics": result_dict["token_metrics"],
+        "repeat_query_cache": result_repeat_dict.get("cache", {}),
+    }
+    typer.echo(json.dumps(summary, indent=2))
+    if not ok:
+        raise typer.Exit(1)
+
+
+@app.command()
+def benchmark(
+    inputs: Annotated[list[str], typer.Option("--inputs", help="Files or directories to benchmark.")],
+    db: DbOpt = str(DEFAULT_DB_PATH),
+    chunk_size: ChunkSizeOpt = DEFAULT_CHUNK_SIZE,
+    overlap: OverlapOpt = DEFAULT_CHUNK_OVERLAP,
+    embedding_backend: EmbBackendOpt = DEFAULT_EMBEDDING_BACKEND,
+    embedding_model: EmbModelOpt = DEFAULT_EMBEDDING_MODEL,
+    dimensions: DimensionsOpt = DEFAULT_DIMENSIONS,
+    top_k: TopKOpt = DEFAULT_TOP_K,
+    fts_k: FtsKOpt = DEFAULT_FTS_K,
+    vector_k: VectorKOpt = DEFAULT_VECTOR_K,
+    hybrid_mode: HybridModeOpt = DEFAULT_HYBRID_MODE,
+    word_budget: WordBudgetOpt = DEFAULT_WORD_BUDGET,
+) -> None:
+    """Run comprehensive benchmarks and generate a metrics report."""
     import time
 
-    db_path = Path(args.db).expanduser().resolve()
+    db_path = Path(db).expanduser().resolve()
 
-    # Collect test files
-    files = collect_input_files(args.inputs) if args.inputs else []
+    files = collect_input_files(inputs)
     if not files:
-        print("No input files for benchmarking. Provide --inputs.", file=sys.stderr)
-        return 1
+        err.print("[red]No input files for benchmarking. Provide --inputs.[/red]")
+        raise typer.Exit(1)
 
-    # Calculate raw input stats
     raw_tokens_total = 0
     raw_chars_total = 0
-    file_stats: list[dict] = []
-
     for file_path in files:
         try:
             content = Path(file_path).read_text(encoding="utf-8", errors="replace")
             tokens = estimate_tokens(content)
             raw_tokens_total += tokens
             raw_chars_total += len(content)
-            file_stats.append({
-                "file": str(file_path),
-                "tokens": tokens,
-                "chars": len(content),
-            })
         except Exception:
             continue
 
-    # Benchmark indexing
     conn = connect_db(db_path)
-    embedding_backend, embedding_model = resolve_embedding_backend(
-        requested_backend=args.embedding_backend,
-        requested_model=args.embedding_model,
+    backend, model = resolve_embedding_backend(
+        requested_backend=embedding_backend, requested_model=embedding_model
     )
-    chunk_size_words, overlap_words = normalize_chunking(args.chunk_size, args.overlap)
+    chunk_size_words, overlap_words = normalize_chunking(chunk_size, overlap)
 
-    index_start = time.perf_counter()
-    stats = index_corpus(
-        conn=conn,
-        file_paths=files,
-        chunk_size_words=chunk_size_words,
-        overlap_words=overlap_words,
-        dimensions=args.dimensions,
-        embedding_backend=embedding_backend,
-        embedding_model=embedding_model,
-    )
-    index_latency_ms = (time.perf_counter() - index_start) * 1000
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=err) as progress:
+        task = progress.add_task(f"Indexing {len(files)} file(s) for benchmark…")
+        index_start = time.perf_counter()
+        stats = index_corpus(
+            conn=conn,
+            file_paths=files,
+            chunk_size_words=chunk_size_words,
+            overlap_words=overlap_words,
+            dimensions=dimensions,
+            embedding_backend=backend,
+            embedding_model=model,
+        )
+        index_latency_ms = (time.perf_counter() - index_start) * 1000
+        progress.update(task, description="Building ANN index…")
+        inferred_dims = infer_embedding_dimensions(
+            conn=conn, backend=backend, model_name=model, fallback_dimensions=dimensions
+        )
+        build_hnsw_index(
+            conn=conn, db_path=db_path, backend=backend, dimensions=inferred_dims, model_name=model
+        )
 
-    # Build ANN index
-    inferred_dims = infer_embedding_dimensions(
-        conn=conn,
-        backend=embedding_backend,
-        model_name=embedding_model,
-        fallback_dimensions=args.dimensions,
-    )
-    build_hnsw_index(
-        conn=conn,
-        db_path=db_path,
-        backend=embedding_backend,
-        dimensions=inferred_dims,
-        model_name=embedding_model,
-    )
-
-    # Benchmark queries
     test_queries = [
         "How does authentication work?",
         "What functions handle database connections?",
@@ -347,57 +532,51 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
     query_metrics: list[dict] = []
     compressed_tokens_total = 0
 
-    for query in test_queries:
-        query_start = time.perf_counter()
-        result = run_retrieval_pipeline(
-            conn=conn,
-            db_path=db_path,
-            query=query,
-            top_k=args.top_k,
-            fts_k=args.fts_k,
-            vector_k=args.vector_k,
-            min_fts_hits=DEFAULT_MIN_FTS_HITS,
-            hybrid_mode=args.hybrid_mode,
-            retrieval_mode="compact",
-            embedding_backend=embedding_backend,
-            embedding_model=embedding_model,
-            session_id="benchmark",
-            query_cache_ttl_seconds=0,  # Disable cache for benchmarking
-            dimensions=args.dimensions,
-            word_budget=args.word_budget,
-        )
-        query_latency_ms = (time.perf_counter() - query_start) * 1000
-
-        compressed_tokens = result.get("token_metrics", {}).get("compressed_tokens", 0)
-        selected_tokens = result.get("token_metrics", {}).get("selected_chunk_tokens", 0)
-        compressed_tokens_total += compressed_tokens
-
-        query_metrics.append({
-            "query": query,
-            "latency_ms": round(query_latency_ms, 2),
-            "fts_hits": result.get("retrieval", {}).get("fts_hits", 0),
-            "vector_hits": result.get("retrieval", {}).get("vector_hits", 0),
-            "selected_chunks": result.get("selected_chunks", 0),
-            "selected_tokens": selected_tokens,
-            "compressed_tokens": compressed_tokens,
-            "compression_ratio": round(selected_tokens / max(1, compressed_tokens), 2),
-        })
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=err) as progress:
+        task = progress.add_task(f"Running {len(test_queries)} benchmark queries…")
+        for q in test_queries:
+            q_start = time.perf_counter()
+            result = run_retrieval_pipeline(
+                conn=conn,
+                db_path=db_path,
+                query=q,
+                top_k=top_k,
+                fts_k=fts_k,
+                vector_k=vector_k,
+                min_fts_hits=DEFAULT_MIN_FTS_HITS,
+                hybrid_mode=hybrid_mode,
+                retrieval_mode="compact",
+                embedding_backend=backend,
+                embedding_model=model,
+                session_id="benchmark",
+                query_cache_ttl_seconds=0,
+                dimensions=dimensions,
+                word_budget=word_budget,
+            )
+            q_latency_ms = (time.perf_counter() - q_start) * 1000
+            compressed_tokens = result.get("token_metrics", {}).get("compressed_tokens", 0)
+            selected_tokens = result.get("token_metrics", {}).get("selected_chunk_tokens", 0)
+            compressed_tokens_total += compressed_tokens
+            query_metrics.append({
+                "query": q,
+                "latency_ms": round(q_latency_ms, 2),
+                "fts_hits": result.get("retrieval", {}).get("fts_hits", 0),
+                "vector_hits": result.get("retrieval", {}).get("vector_hits", 0),
+                "selected_chunks": result.get("selected_chunks", 0),
+                "selected_tokens": selected_tokens,
+                "compressed_tokens": compressed_tokens,
+                "compression_ratio": round(selected_tokens / max(1, compressed_tokens), 2),
+            })
 
     conn.close()
 
-    # Calculate aggregate metrics
     avg_query_latency = sum(q["latency_ms"] for q in query_metrics) / len(query_metrics)
     avg_compression_ratio = sum(q["compression_ratio"] for q in query_metrics) / len(query_metrics)
-
-    # Token savings analysis
-    # If user sent all raw content vs using token-reducer
     hypothetical_saved = raw_tokens_total - (compressed_tokens_total / len(test_queries))
     savings_pct = (hypothetical_saved / raw_tokens_total * 100) if raw_tokens_total > 0 else 0
-
-    # Cost savings estimate (assuming $0.01 per 1K input tokens for Claude)
-    cost_per_1k_tokens = 0.01
-    raw_cost = (raw_tokens_total / 1000) * cost_per_1k_tokens
-    compressed_cost = (compressed_tokens_total / len(test_queries) / 1000) * cost_per_1k_tokens
+    cost_per_1k = 0.01
+    raw_cost = (raw_tokens_total / 1000) * cost_per_1k
+    compressed_cost = (compressed_tokens_total / len(test_queries) / 1000) * cost_per_1k
     cost_savings = raw_cost - compressed_cost
 
     report = {
@@ -406,8 +585,8 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
             "chunks_created": stats["chunks_indexed"],
             "raw_input_tokens": raw_tokens_total,
             "raw_input_chars": raw_chars_total,
-            "embedding_backend": embedding_backend,
-            "embedding_model": embedding_model,
+            "embedding_backend": backend,
+            "embedding_model": model,
         },
         "latency_metrics": {
             "index_time_ms": round(index_latency_ms, 2),
@@ -436,227 +615,268 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
         "query_details": query_metrics,
     }
 
-    print(json.dumps(report, indent=2))
+    typer.echo(json.dumps(report, indent=2))
 
-    # Print human-readable summary
-    print("\n" + "=" * 60, file=sys.stderr)
-    print("TOKEN REDUCER BENCHMARK SUMMARY", file=sys.stderr)
-    print("=" * 60, file=sys.stderr)
-    print(f"Files indexed: {len(files)}", file=sys.stderr)
-    print(f"Raw input tokens: {raw_tokens_total:,}", file=sys.stderr)
-    print(f"Avg compressed tokens: {compressed_tokens_total // len(test_queries):,}", file=sys.stderr)
-    print(f"Token savings: {savings_pct:.1f}%", file=sys.stderr)
-    print(f"Avg query latency: {avg_query_latency:.1f}ms", file=sys.stderr)
-    print(f"Cost savings per 100 queries: ${cost_savings * 100:.2f}", file=sys.stderr)
-    print("=" * 60, file=sys.stderr)
-
-    return 0
+    err.print(f"\n[bold]TOKEN REDUCER BENCHMARK[/bold]")
+    err.print(f"  Files indexed:          {len(files)}")
+    err.print(f"  Raw input tokens:       {raw_tokens_total:,}")
+    err.print(f"  Avg compressed tokens:  {compressed_tokens_total // len(test_queries):,}")
+    err.print(f"  Token savings:          [green]{savings_pct:.1f}%[/green]")
+    err.print(f"  Avg query latency:      {avg_query_latency:.1f} ms")
+    err.print(f"  Cost savings / 100q:    [green]${cost_savings * 100:.2f}[/green]")
 
 
-def cmd_self_test(_args: argparse.Namespace) -> int:
-    from .db import index_corpus as _index_corpus
-    from .chunker import collect_input_files as _collect_input_files
+# ---------------------------------------------------------------------------
+# Context Lifecycle Management Commands
+# ---------------------------------------------------------------------------
 
-    with tempfile.TemporaryDirectory(prefix="token-reducer-self-test-") as tmp_dir:
-        root = Path(tmp_dir)
-        db_path = root / "index.db"
 
-        sample_files = {
-            "auth_middleware.md": """
-            The authentication middleware checks JWT tokens in cookies.
-            If the token is invalid, the middleware redirects to /login.
-            It runs before protected route handlers.
-            """,
-            "session_guard.md": """
-            Authorization guard validates session credentials prior to route execution.
-            The guard denies unauthorized access and records audit logs.
-            """,
-            "unrelated_notes.md": """
-            CSS palette and typography notes for landing page.
-            Icon sizing and spacing guidance for components.
-            """,
+@app.command()
+def sync(
+    inputs: Annotated[list[str], typer.Option("--inputs", help="Files or directories to sync.")],
+    db: DbOpt = str(DEFAULT_DB_PATH),
+    chunk_size: ChunkSizeOpt = DEFAULT_CHUNK_SIZE,
+    overlap: OverlapOpt = DEFAULT_CHUNK_OVERLAP,
+    embedding_backend: EmbBackendOpt = DEFAULT_EMBEDDING_BACKEND,
+    embedding_model: EmbModelOpt = DEFAULT_EMBEDDING_MODEL,
+    dimensions: DimensionsOpt = DEFAULT_DIMENSIONS,
+    output_json: JsonOpt = False,
+) -> None:
+    """Incrementally sync the index with the filesystem.
+
+    Only re-indexes files that have been added or modified since last sync.
+    Removes index entries for files that no longer exist.
+    """
+    import os
+
+    db_path = Path(db).expanduser().resolve()
+    conn = connect_db(db_path)
+    try:
+        files = collect_input_files(inputs)
+        if not files:
+            err.print("[yellow]No indexable files found in inputs.[/yellow]")
+            raise typer.Exit(1)
+
+        backend, model = resolve_embedding_backend(
+            requested_backend=embedding_backend,
+            requested_model=embedding_model,
+        )
+        chunk_size_words, overlap_words = normalize_chunking(chunk_size, overlap)
+
+        # Detect changes
+        new_files, modified_files, deleted_sources = detect_file_changes(conn, files)
+
+        stats = {
+            "new_files": len(new_files),
+            "modified_files": len(modified_files),
+            "deleted_files": len(deleted_sources),
+            "unchanged_files": len(files) - len(new_files) - len(modified_files),
+            "chunks_indexed": 0,
         }
 
-        for name, content in sample_files.items():
-            (root / name).write_text(content.strip() + "\n", encoding="utf-8")
+        # If no changes detected
+        if not new_files and not modified_files and not deleted_sources:
+            if output_json:
+                typer.echo(json.dumps({"status": "up_to_date", **stats}, indent=2))
+            else:
+                err.print("[green]✓ Context is up to date. No sync needed.[/green]")
+            return
 
-        conn = connect_db(db_path)
-        try:
-            files = _collect_input_files([str(root)])
-            _index_corpus(
-                conn=conn,
-                file_paths=files,
-                chunk_size_words=DEFAULT_CHUNK_SIZE,
-                overlap_words=DEFAULT_CHUNK_OVERLAP,
-                dimensions=DEFAULT_DIMENSIONS,
-                embedding_backend="hash",
-                embedding_model=None,
-            )
-            result = run_retrieval_pipeline(
-                conn=conn,
-                db_path=db_path,
-                query="How does middleware validate auth tokens before protected routes?",
-                top_k=5,
-                fts_k=8,
-                vector_k=8,
-                min_fts_hits=DEFAULT_MIN_FTS_HITS,
-                hybrid_mode="always",
-                retrieval_mode="compact",
-                embedding_backend="hash",
-                embedding_model=None,
-                session_id="self-test",
-                query_cache_ttl_seconds=DEFAULT_QUERY_CACHE_TTL_SECONDS,
-                dimensions=DEFAULT_DIMENSIONS,
-                word_budget=DEFAULT_WORD_BUDGET,
-            )
+        # Remove deleted files from index
+        if deleted_sources:
+            removed = remove_documents_by_source(conn, deleted_sources)
+            if not output_json:
+                err.print(f"[dim]Removed {removed} deleted file(s) from index.[/dim]")
 
-            result_repeat = run_retrieval_pipeline(
-                conn=conn,
-                db_path=db_path,
-                query="How does middleware validate auth tokens before protected routes?",
-                top_k=5,
-                fts_k=8,
-                vector_k=8,
-                min_fts_hits=DEFAULT_MIN_FTS_HITS,
-                hybrid_mode="always",
-                retrieval_mode="compact",
-                embedding_backend="hash",
-                embedding_model=None,
-                session_id="self-test",
-                query_cache_ttl_seconds=DEFAULT_QUERY_CACHE_TTL_SECONDS,
-                dimensions=DEFAULT_DIMENSIONS,
-                word_budget=DEFAULT_WORD_BUDGET,
-            )
-        finally:
-            conn.close()
+        # Index new and modified files
+        files_to_index = new_files + modified_files
+        if files_to_index:
+            with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=err) as progress:
+                progress.add_task(f"Syncing {len(files_to_index)} file(s)…")
 
-    checks = {
-        "bm25_enabled": bool(result["retrieval"]["bm25_enabled"]),
-        "fts_hits_gt_zero": int(result["retrieval"]["fts_hits"]) > 0,
-        "vector_hits_gt_zero": int(result["retrieval"]["vector_hits"]) > 0,
-        "selected_chunks_le_5": int(result["selected_chunks"]) <= 5,
-        "compressed_le_selected_tokens": int(result["token_metrics"]["compressed_tokens"])
-        <= int(result["token_metrics"]["selected_chunk_tokens"]),
-        "cache_hit_on_repeat": bool(result_repeat.get("cache", {}).get("hit", False)),
-        "session_memory_present": bool(result_repeat.get("session_memory", {}).get("recent_queries")),
-    }
+                for path in files_to_index:
+                    raw = path.read_text(encoding="utf-8", errors="replace")
+                    cleaned = clean_text(raw)
+                    if not cleaned:
+                        continue
 
-    ok = all(checks.values())
-    summary = {
-        "ok": ok,
-        "checks": checks,
-        "retrieval": result["retrieval"],
-        "token_metrics": result["token_metrics"],
-        "repeat_query_cache": result_repeat.get("cache", {}),
-    }
-    print(json.dumps(summary, indent=2))
-    return 0 if ok else 1
+                    chunk_count = upsert_document(
+                        conn=conn,
+                        source=str(path),
+                        raw_text=raw,
+                        cleaned_text=cleaned,
+                        chunk_size_words=chunk_size_words,
+                        overlap_words=overlap_words,
+                        dimensions=dimensions,
+                        embedding_backend=backend,
+                        embedding_model=model,
+                    )
+                    stats["chunks_indexed"] += chunk_count
+
+                    # Update mtime for change tracking
+                    mtime = os.path.getmtime(path)
+                    update_document_mtime(conn, str(path), mtime)
+
+                conn.commit()
+
+            # Rebuild ANN index if we have enough chunks
+            adaptive_tier = infer_retrieval_tier(conn)
+            if adaptive_tier == "full_hybrid":
+                inferred_dims = infer_embedding_dimensions(
+                    conn=conn, backend=backend, model_name=model, fallback_dimensions=dimensions
+                )
+                build_hnsw_index(
+                    conn=conn, db_path=db_path, backend=backend,
+                    dimensions=inferred_dims, model_name=model,
+                )
+
+        if output_json:
+            typer.echo(json.dumps({"status": "synced", **stats}, indent=2))
+        else:
+            err.print(f"[green]✓ Sync complete:[/green]")
+            err.print(f"    New files indexed:      {stats['new_files']}")
+            err.print(f"    Modified files updated: {stats['modified_files']}")
+            err.print(f"    Deleted files removed:  {stats['deleted_files']}")
+            err.print(f"    Total chunks indexed:   {stats['chunks_indexed']}")
+
+    finally:
+        conn.close()
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="context_pipeline",
-        description="Local-first context slimming pipeline for Claude Code.",
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+@app.command()
+def gc(
+    db: DbOpt = str(DEFAULT_DB_PATH),
+    vacuum: Annotated[bool, typer.Option("--vacuum", help="Run VACUUM after cleanup.")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show what would be cleaned without deleting.")] = False,
+    output_json: JsonOpt = False,
+) -> None:
+    """Garbage collect stale tokens and orphaned data.
 
-    index_parser = subparsers.add_parser("index", help="Preprocess and index input files.")
-    index_parser.add_argument("--inputs", nargs="+", required=True, help="Files or directories to index.")
-    index_parser.add_argument("--db", default=str(DEFAULT_DB_PATH), help="SQLite index path.")
-    index_parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
-    index_parser.add_argument("--overlap", type=int, default=DEFAULT_CHUNK_OVERLAP)
-    index_parser.add_argument("--embedding-backend", choices=["hash", "ml"], default=DEFAULT_EMBEDDING_BACKEND)
-    index_parser.add_argument("--embedding-model", default=DEFAULT_EMBEDDING_MODEL)
-    index_parser.add_argument("--dimensions", type=int, default=DEFAULT_DIMENSIONS)
+    Cleans up:
+    - Orphaned chunks (no parent document)
+    - Orphaned embeddings (no parent chunk)
+    - Expired query cache entries
+    - Orphaned symbols and dependencies
+    """
+    db_path = Path(db).expanduser().resolve()
+    if not db_path.exists():
+        err.print(f"[red]Database not found: {db_path}[/red]")
+        raise typer.Exit(1)
 
-    query_parser = subparsers.add_parser("query", help="Retrieve and compress from existing index.")
-    query_parser.add_argument("--query", required=True, help="Question or objective.")
-    query_parser.add_argument("--db", default=str(DEFAULT_DB_PATH), help="SQLite index path.")
-    query_parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
-    query_parser.add_argument("--fts-k", type=int, default=DEFAULT_FTS_K)
-    query_parser.add_argument("--vector-k", type=int, default=DEFAULT_VECTOR_K)
-    query_parser.add_argument("--min-fts-hits", type=int, default=DEFAULT_MIN_FTS_HITS)
-    query_parser.add_argument("--mode", choices=["compact", "deep-debug"], default=DEFAULT_RETRIEVAL_MODE)
-    query_parser.add_argument("--hybrid-mode", choices=["always", "fallback"], default=DEFAULT_HYBRID_MODE)
-    query_parser.add_argument("--embedding-backend", choices=["hash", "ml"], default=DEFAULT_EMBEDDING_BACKEND)
-    query_parser.add_argument("--embedding-model", default=DEFAULT_EMBEDDING_MODEL)
-    query_parser.add_argument("--dimensions", type=int, default=DEFAULT_DIMENSIONS)
-    query_parser.add_argument("--session-id", default="default")
-    query_parser.add_argument("--query-cache-ttl", type=int, default=DEFAULT_QUERY_CACHE_TTL_SECONDS)
-    query_parser.add_argument("--word-budget", type=int, default=DEFAULT_WORD_BUDGET)
-    query_parser.add_argument("--json", action="store_true")
+    conn = connect_db(db_path)
+    try:
+        size_before = get_database_size(db_path)
 
-    run_parser = subparsers.add_parser("run", help="End-to-end run: optional indexing, then retrieval and compression.")
-    run_parser.add_argument("--inputs", nargs="*", default=[], help="Files or directories to index first.")
-    run_parser.add_argument("--query", required=True, help="Question or objective.")
-    run_parser.add_argument("--db", default=str(DEFAULT_DB_PATH), help="SQLite index path.")
-    run_parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
-    run_parser.add_argument("--overlap", type=int, default=DEFAULT_CHUNK_OVERLAP)
-    run_parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
-    run_parser.add_argument("--fts-k", type=int, default=DEFAULT_FTS_K)
-    run_parser.add_argument("--vector-k", type=int, default=DEFAULT_VECTOR_K)
-    run_parser.add_argument("--min-fts-hits", type=int, default=DEFAULT_MIN_FTS_HITS)
-    run_parser.add_argument("--mode", choices=["compact", "deep-debug"], default=DEFAULT_RETRIEVAL_MODE)
-    run_parser.add_argument("--hybrid-mode", choices=["always", "fallback"], default=DEFAULT_HYBRID_MODE)
-    run_parser.add_argument("--embedding-backend", choices=["hash", "ml"], default=DEFAULT_EMBEDDING_BACKEND)
-    run_parser.add_argument("--embedding-model", default=DEFAULT_EMBEDDING_MODEL)
-    run_parser.add_argument("--dimensions", type=int, default=DEFAULT_DIMENSIONS)
-    run_parser.add_argument("--session-id", default="default")
-    run_parser.add_argument("--query-cache-ttl", type=int, default=DEFAULT_QUERY_CACHE_TTL_SECONDS)
-    run_parser.add_argument("--word-budget", type=int, default=DEFAULT_WORD_BUDGET)
-    run_parser.add_argument("--json", action="store_true")
+        with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=err) as progress:
+            task_desc = "Analyzing database…" if dry_run else "Running garbage collection…"
+            progress.add_task(task_desc)
+            gc_stats = garbage_collect(conn, dry_run=dry_run)
 
-    compress_raw_parser = subparsers.add_parser(
-        "compress-raw",
-        help="Zero-Turn: read raw text from stdin, compress it in-memory, and output the context packet.",
-    )
-    compress_raw_parser.add_argument("--query", default="", help="Optional query to focus compression")
-    compress_raw_parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
-    compress_raw_parser.add_argument("--overlap", type=int, default=DEFAULT_CHUNK_OVERLAP)
-    compress_raw_parser.add_argument("--dimensions", type=int, default=DEFAULT_DIMENSIONS)
-    compress_raw_parser.add_argument("--top-k", type=int, default=5)
-    compress_raw_parser.add_argument("--fts-k", type=int, default=12)
-    compress_raw_parser.add_argument("--word-budget", type=int, default=500)
+        if vacuum and not dry_run:
+            with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=err) as progress:
+                progress.add_task("Running VACUUM…")
+                vacuum_database(conn)
 
-    subparsers.add_parser("self-test", help="Run internal checks for BM25+hybrid retrieval and token reduction behavior.")
+        size_after = get_database_size(db_path)
+        bytes_reclaimed = size_before - size_after
 
-    benchmark_parser = subparsers.add_parser("benchmark", help="Run benchmarks and generate metrics report.")
-    benchmark_parser.add_argument("--inputs", nargs="+", required=True, help="Files or directories to benchmark.")
-    benchmark_parser.add_argument("--db", default=str(DEFAULT_DB_PATH), help="SQLite index path.")
-    benchmark_parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
-    benchmark_parser.add_argument("--overlap", type=int, default=DEFAULT_CHUNK_OVERLAP)
-    benchmark_parser.add_argument("--embedding-backend", choices=["hash", "ml"], default=DEFAULT_EMBEDDING_BACKEND)
-    benchmark_parser.add_argument("--embedding-model", default=DEFAULT_EMBEDDING_MODEL)
-    benchmark_parser.add_argument("--dimensions", type=int, default=DEFAULT_DIMENSIONS)
-    benchmark_parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
-    benchmark_parser.add_argument("--fts-k", type=int, default=DEFAULT_FTS_K)
-    benchmark_parser.add_argument("--vector-k", type=int, default=DEFAULT_VECTOR_K)
-    benchmark_parser.add_argument("--hybrid-mode", choices=["always", "fallback"], default=DEFAULT_HYBRID_MODE)
-    benchmark_parser.add_argument("--word-budget", type=int, default=DEFAULT_WORD_BUDGET)
+        result = {
+            "dry_run": dry_run,
+            "orphaned_chunks_removed": gc_stats["orphaned_chunks"],
+            "orphaned_embeddings_removed": gc_stats["orphaned_embeddings"],
+            "expired_cache_entries_removed": gc_stats["expired_cache_entries"],
+            "orphaned_symbols_removed": gc_stats["orphaned_symbols"],
+            "orphaned_dependencies_removed": gc_stats["orphaned_dependencies"],
+            "vacuum_run": vacuum and not dry_run,
+            "bytes_reclaimed": bytes_reclaimed if not dry_run else 0,
+        }
 
-    return parser
+        total_cleaned = sum([
+            gc_stats["orphaned_chunks"],
+            gc_stats["orphaned_embeddings"],
+            gc_stats["expired_cache_entries"],
+            gc_stats["orphaned_symbols"],
+            gc_stats["orphaned_dependencies"],
+        ])
+
+        if output_json:
+            typer.echo(json.dumps(result, indent=2))
+        else:
+            action = "Would clean" if dry_run else "Cleaned"
+            if total_cleaned == 0:
+                err.print("[green]✓ Database clean. No garbage collection needed.[/green]")
+            else:
+                err.print(f"[green]✓ {action}:[/green]")
+                if gc_stats["orphaned_chunks"]:
+                    err.print(f"    Orphaned chunks:      {gc_stats['orphaned_chunks']}")
+                if gc_stats["orphaned_embeddings"]:
+                    err.print(f"    Orphaned embeddings:  {gc_stats['orphaned_embeddings']}")
+                if gc_stats["expired_cache_entries"]:
+                    err.print(f"    Expired cache:        {gc_stats['expired_cache_entries']}")
+                if gc_stats["orphaned_symbols"]:
+                    err.print(f"    Orphaned symbols:     {gc_stats['orphaned_symbols']}")
+                if gc_stats["orphaned_dependencies"]:
+                    err.print(f"    Orphaned deps:        {gc_stats['orphaned_dependencies']}")
+
+            if vacuum and not dry_run and bytes_reclaimed > 0:
+                err.print(f"    Bytes reclaimed:      {bytes_reclaimed:,}")
+
+    finally:
+        conn.close()
 
 
-def main() -> int:
-    parser = build_parser()
-    args = parser.parse_args()
+@app.command()
+def stats(
+    db: DbOpt = str(DEFAULT_DB_PATH),
+    output_json: JsonOpt = False,
+) -> None:
+    """Show index statistics and health information."""
+    db_path = Path(db).expanduser().resolve()
+    if not db_path.exists():
+        err.print(f"[red]Database not found: {db_path}[/red]")
+        raise typer.Exit(1)
 
-    if args.command == "index":
-        return cmd_index(args)
-    if args.command == "query":
-        return cmd_query(args)
-    if args.command == "run":
-        return cmd_run(args)
-    if args.command == "compress-raw":
-        return cmd_compress_raw(args)
-    if args.command == "self-test":
-        return cmd_self_test(args)
-    if args.command == "benchmark":
-        return cmd_benchmark(args)
+    conn = connect_db(db_path)
+    try:
+        index_stats = get_index_stats(conn)
+        db_size = get_database_size(db_path)
+        tier = infer_retrieval_tier(conn)
 
-    parser.print_help()
-    return 1
+        result = {
+            "database_path": str(db_path),
+            "database_size_bytes": db_size,
+            "retrieval_tier": tier,
+            **index_stats,
+        }
+
+        if output_json:
+            typer.echo(json.dumps(result, indent=2))
+        else:
+            err.print("[bold]TOKEN REDUCER INDEX STATS[/bold]")
+            err.print(f"  Database:        {db_path}")
+            err.print(f"  Size:            {db_size / 1024:.1f} KB")
+            err.print(f"  Retrieval tier:  {tier}")
+            err.print(f"  Documents:       {index_stats['documents']}")
+            err.print(f"  Chunks:          {index_stats['chunks']}")
+            err.print(f"  Embeddings:      {index_stats['embeddings']}")
+            err.print(f"  Symbols:         {index_stats['symbols']}")
+            err.print(f"  Dependencies:    {index_stats['file_dependencies']}")
+            err.print(f"  Cache entries:   {index_stats['query_cache_entries']}")
+            if index_stats['oldest_document']:
+                err.print(f"  Oldest doc:      {index_stats['oldest_document']}")
+            if index_stats['newest_document']:
+                err.print(f"  Newest doc:      {index_stats['newest_document']}")
+            if index_stats['embedding_backends']:
+                backends = ", ".join(f"{k}: {v}" for k, v in index_stats['embedding_backends'].items())
+                err.print(f"  Backends:        {backends}")
+
+    finally:
+        conn.close()
+
+
+def main() -> None:
+    app()
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

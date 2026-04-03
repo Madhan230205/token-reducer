@@ -9,7 +9,7 @@ DEFAULT_CHUNK_OVERLAP = 40
 DEFAULT_DIMENSIONS = 256
 DEFAULT_FTS_K = 12
 DEFAULT_VECTOR_K = 20
-DEFAULT_TOP_K = 5
+DEFAULT_TOP_K = 50  # Expanded pool size; relevance floor handles cutoff
 DEFAULT_MIN_FTS_HITS = 3
 DEFAULT_WORD_BUDGET = 350
 DEFAULT_HYBRID_MODE = "fallback"
@@ -19,6 +19,7 @@ DEFAULT_EMBEDDING_MODEL = "jinaai/jina-embeddings-v2-base-code"
 DEFAULT_ANN_ENGINE = "hnsw"
 DEFAULT_ANN_EF_SEARCH = 160
 DEFAULT_QUERY_CACHE_TTL_SECONDS = 900
+DEFAULT_RELEVANCE_FLOOR = 0.15  # Minimum score threshold for knapsack packing
 
 # Adaptive retrieval tiers — determined at runtime from indexed chunk count.
 # Small  (<  TIER_SMALL_CHUNKS)  → FTS5 only; no embeddings used for retrieval, no ANN built.

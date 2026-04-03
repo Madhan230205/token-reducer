@@ -557,6 +557,7 @@ def extract_function_calls(text: str) -> list[str]:
 def resolve_import_to_file(import_path: str, source_file: str, indexed_files: set[str]) -> str | None:
     """Attempt to resolve an import path to an actual indexed file."""
     source_dir = Path(source_file).parent
+    dotted_import_as_path = import_path.replace(".", "/")
 
     # Common resolution strategies
     candidates = [
@@ -568,8 +569,8 @@ def resolve_import_to_file(import_path: str, source_file: str, indexed_files: se
         str(source_dir / import_path / "index.ts"),
         str(source_dir / import_path / "index.js"),
         # Convert dot notation to path
-        str(source_dir / import_path.replace(".", "/") + ".py"),
-        str(source_dir / import_path.replace(".", "/") + ".ts"),
+        str(source_dir / f"{dotted_import_as_path}.py"),
+        str(source_dir / f"{dotted_import_as_path}.ts"),
     ]
 
     for candidate in candidates:
