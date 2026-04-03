@@ -1,5 +1,5 @@
 repository:
-  description: "Open-source, local-first Claude Code plugin for token reduction and context compression using hybrid retrieval (BM25 + vectors), reranking, and AST-aware chunking."
+  description: "⚡ Cut Claude token usage by 90%+ — open-source, local-first context compression for Claude Code using hybrid RAG (BM25 + ONNX vectors), AST chunking & reranking. Free. No API needed."
   homepage: "https://github.com/Madhan230205/token-reducer"
   topics:
     - claude-code
@@ -14,3 +14,11 @@ repository:
     - sqlite
     - local-first
     - open-source
+    - llm
+    - llm-tools
+    - ai-tools
+    - cost-optimization
+    - embeddings
+    - semantic-search
+    - python
+    - developer-productivity
