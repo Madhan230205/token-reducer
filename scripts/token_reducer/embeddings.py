@@ -124,9 +124,7 @@ def get_onnx_session(model_path: str):
                 break
 
         if onnx_path is None:
-            raise RuntimeError(
-                f"No ONNX model file found locally in '{model_path}'"
-            ) from hf_err
+            raise RuntimeError(f"No ONNX model file found locally in '{model_path}'") from hf_err
 
         tokenizer_path = str(model_dir / "tokenizer.json")
 
@@ -155,7 +153,11 @@ def embed_text_onnx(
 
     tokens = encoding.ids[:real_len] + [0] * pad_len
     attn_mask = [1] * real_len + [0] * pad_len
-    type_ids = list(encoding.type_ids[:real_len]) + [0] * pad_len if encoding.type_ids else [0] * max_length
+    type_ids = (
+        list(encoding.type_ids[:real_len]) + [0] * pad_len
+        if encoding.type_ids
+        else [0] * max_length
+    )
 
     input_ids = np.array([tokens], dtype=np.int64)
     attention_mask_array = np.array([attn_mask], dtype=np.int64)
