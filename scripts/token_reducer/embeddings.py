@@ -4,9 +4,15 @@ import math
 import sys
 from collections.abc import Sequence
 from hashlib import blake2b
+from pathlib import Path
 
 from .chunker import char_ngrams, tokenize
-from .config import _EMBEDDING_MODEL_CACHE, get_weight
+from .config import (
+    _EMBEDDING_MODEL_CACHE,
+    _ONNX_SESSION_CACHE,
+    DEFAULT_ONNX_MAX_LENGTH,
+    get_weight,
+)
 
 
 def embed_text_hash(text: str, dimensions: int) -> list[float]:
@@ -66,6 +72,118 @@ def embed_text_ml(text: str, model_name: str) -> list[float]:
     return [float(x) for x in embedding]
 
 
+# Candidate ONNX filenames tried in order: quantized int8 first (smallest/fastest),
+# then subfolder full-precision, then legacy root-level model.onnx.
+_ONNX_CANDIDATE_FILENAMES = ["onnx/model_quantized.onnx", "onnx/model.onnx", "model.onnx"]
+
+
+def get_onnx_session(model_path: str):
+    """Load or retrieve cached ONNX Runtime session for embeddings."""
+    cached = _ONNX_SESSION_CACHE.get(model_path)
+    if cached is not None:
+        return cached
+
+    try:
+        import onnxruntime as ort  # type: ignore
+        from tokenizers import Tokenizer  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(
+            "ONNX embedding backend requested but onnxruntime or tokenizers is not installed."
+        ) from exc
+
+    onnx_path: str | None = None
+    tokenizer_path: str | None = None
+
+    try:
+        from huggingface_hub import hf_hub_download  # type: ignore
+
+        for candidate in _ONNX_CANDIDATE_FILENAMES:
+            try:
+                onnx_path = hf_hub_download(repo_id=model_path, filename=candidate)
+                break
+            except Exception:
+                continue
+
+        if onnx_path is None:
+            raise RuntimeError(f"No ONNX model file found in HuggingFace repo '{model_path}'")
+
+        tokenizer_path = hf_hub_download(repo_id=model_path, filename="tokenizer.json")
+
+    except Exception as hf_err:
+        model_dir = Path(model_path)
+        if not model_dir.exists():
+            raise RuntimeError(
+                f"ONNX model not found at '{model_path}'. "
+                "Provide a valid HuggingFace model ID or local directory path."
+            ) from hf_err
+
+        for candidate in _ONNX_CANDIDATE_FILENAMES:
+            p = model_dir / candidate
+            if p.exists():
+                onnx_path = str(p)
+                break
+
+        if onnx_path is None:
+            raise RuntimeError(
+                f"No ONNX model file found locally in '{model_path}'"
+            ) from hf_err
+
+        tokenizer_path = str(model_dir / "tokenizer.json")
+
+    session = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+    tokenizer = Tokenizer.from_file(tokenizer_path)
+
+    _ONNX_SESSION_CACHE[model_path] = (session, tokenizer)
+    return session, tokenizer
+
+
+def embed_text_onnx(
+    text: str, model_path: str, max_length: int = DEFAULT_ONNX_MAX_LENGTH
+) -> list[float]:
+    """Generate embeddings using ONNX Runtime for fast CPU inference.
+
+    Uses attention-mask-weighted mean pooling so padding tokens are excluded
+    from the average. Supports models that require token_type_ids.
+    """
+    import numpy as np
+
+    session, tokenizer = get_onnx_session(model_path)
+
+    encoding = tokenizer.encode(text)
+    real_len = min(len(encoding.ids), max_length)
+    pad_len = max_length - real_len
+
+    tokens = encoding.ids[:real_len] + [0] * pad_len
+    attn_mask = [1] * real_len + [0] * pad_len
+    type_ids = list(encoding.type_ids[:real_len]) + [0] * pad_len if encoding.type_ids else [0] * max_length
+
+    input_ids = np.array([tokens], dtype=np.int64)
+    attention_mask_array = np.array([attn_mask], dtype=np.int64)
+    token_type_ids_array = np.array([type_ids], dtype=np.int64)
+
+    input_names = {inp.name for inp in session.get_inputs()}
+    ort_inputs: dict[str, object] = {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask_array,
+    }
+    if "token_type_ids" in input_names:
+        ort_inputs["token_type_ids"] = token_type_ids_array
+
+    outputs = session.run(None, ort_inputs)
+
+    # Attention-mask-weighted mean pooling: exclude padding tokens from average
+    hidden = outputs[0][0]  # shape: (max_length, hidden_dim)
+    mask = np.array(attn_mask, dtype=np.float32)
+    masked_sum = (hidden * mask[:, np.newaxis]).sum(axis=0)
+    embedding = masked_sum / (mask.sum() + 1e-9)
+
+    norm = np.linalg.norm(embedding)
+    if norm > 0:
+        embedding = embedding / norm
+
+    return [float(x) for x in embedding]
+
+
 def resolve_embedding_backend(
     requested_backend: str,
     requested_model: str,
@@ -73,6 +191,17 @@ def resolve_embedding_backend(
     backend = requested_backend.strip().lower()
     if backend == "hash":
         return "hash", None
+
+    if backend == "onnx":
+        try:
+            get_onnx_session(requested_model)
+            return "onnx", requested_model
+        except Exception as exc:
+            print(
+                f"[warn] ONNX embedding backend unavailable ({exc}). Falling back to hash embeddings.",
+                file=sys.stderr,
+            )
+            return "hash", None
 
     if backend == "ml":
         try:
@@ -99,6 +228,16 @@ def embed_text(
     embedding_model: str | None,
 ) -> tuple[list[float], str, str | None]:
     backend = embedding_backend.strip().lower()
+
+    if backend == "onnx" and embedding_model:
+        try:
+            return embed_text_onnx(text=text, model_path=embedding_model), "onnx", embedding_model
+        except Exception as exc:
+            print(
+                f"[warn] ONNX embedding runtime failed ({exc}). Falling back to hash embeddings.",
+                file=sys.stderr,
+            )
+
     if backend == "ml" and embedding_model:
         try:
             return embed_text_ml(text=text, model_name=embedding_model), "ml", embedding_model

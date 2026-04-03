@@ -321,12 +321,73 @@ def overlap_ratio(query: str, text: str) -> float:
     return len(q_terms & t_terms) / float(len(q_terms))
 
 
+def reciprocal_rank_fusion(
+    fts_hits: list[Candidate],
+    vector_hits: list[Candidate],
+    k: int = 60,
+) -> list[Candidate]:
+    """Combine retrieval results using Reciprocal Rank Fusion (RRF).
+
+    RRF score = sum(1 / (k + rank)) across all retrieval systems.
+    This is a parameter-free, deterministic fusion method that works well
+    for combining BM25 and semantic search.
+
+    Args:
+        fts_hits: Candidates from FTS5/BM25 retrieval (already ranked)
+        vector_hits: Candidates from vector/semantic retrieval (already ranked)
+        k: RRF constant (typically 60). Higher values reduce top position impact.
+
+    Returns:
+        Merged and re-ranked candidates using RRF scores.
+    """
+    from .config import get_rrf_k
+
+    if k <= 0:
+        k = get_rrf_k()
+
+    rrf_scores: dict[int, float] = {}
+    candidates: dict[int, Candidate] = {}
+
+    # Add FTS5/BM25 ranks
+    for rank, candidate in enumerate(fts_hits, start=1):
+        rrf_scores[candidate.chunk_id] = 1.0 / (k + rank)
+        candidates[candidate.chunk_id] = candidate
+
+    # Add vector ranks
+    for rank, candidate in enumerate(vector_hits, start=1):
+        chunk_id = candidate.chunk_id
+        rrf_scores[chunk_id] = rrf_scores.get(chunk_id, 0.0) + (1.0 / (k + rank))
+
+        # Merge candidate info
+        if chunk_id in candidates:
+            candidates[chunk_id].vector_rank = candidate.vector_rank
+            candidates[chunk_id].vector_score = candidate.vector_score
+        else:
+            candidates[chunk_id] = candidate
+
+    # Assign final RRF scores
+    for chunk_id, candidate in candidates.items():
+        candidate.final_score = rrf_scores[chunk_id]
+
+    # Sort by RRF score descending
+    ranked = sorted(candidates.values(), key=lambda c: c.final_score, reverse=True)
+    return ranked
+
+
 def rerank_candidates(
     query: str,
     fts_hits: list[Candidate],
     vector_hits: list[Candidate],
     top_k: int,
 ) -> tuple[list[Candidate], list[Candidate]]:
+    from .config import should_use_rrf
+
+    # Use RRF if enabled, otherwise fall back to weighted scoring
+    if should_use_rrf() and vector_hits:
+        ranked = reciprocal_rank_fusion(fts_hits, vector_hits)
+        return ranked[:top_k], ranked
+
+    # Fallback: Original weighted scoring
     merged: dict[int, Candidate] = {}
 
     for candidate in fts_hits:
