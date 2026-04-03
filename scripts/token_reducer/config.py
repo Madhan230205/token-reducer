@@ -21,6 +21,17 @@ DEFAULT_ANN_EF_SEARCH = 160
 DEFAULT_QUERY_CACHE_TTL_SECONDS = 900
 DEFAULT_RELEVANCE_FLOOR = 0.15  # Minimum score threshold for knapsack packing
 
+# ONNX Runtime settings for fast CPU-based dense embeddings
+# Model path can be local file or HuggingFace hub model ID
+DEFAULT_ONNX_MODEL_PATH = "jinaai/jina-embeddings-v2-base-code"
+DEFAULT_ONNX_MAX_LENGTH = 512  # Max sequence length for tokenization
+
+# Reciprocal Rank Fusion (RRF) settings
+# RRF score = sum(1 / (k + rank)) across retrieval systems
+# Higher k values reduce the impact of top positions
+DEFAULT_RRF_K = 60  # Standard RRF constant (60 is common default)
+DEFAULT_USE_RRF = True  # Enable RRF for hybrid retrieval; False uses weighted sum
+
 # Adaptive retrieval tiers — determined at runtime from indexed chunk count.
 # Small  (<  TIER_SMALL_CHUNKS)  → FTS5 only; no embeddings used for retrieval, no ANN built.
 # Medium (< TIER_MEDIUM_CHUNKS)  → FTS5 primary + hash-embedding fallback; no ANN built.
@@ -55,8 +66,11 @@ DEFAULT_HASH_EMBEDDING_SKIP_VECTOR = True
 
 _EMBEDDING_MODEL_CACHE: dict[str, object] = {}
 _EMBEDDING_VECTOR_CACHE: dict[str, list[float]] = {}
+_ONNX_SESSION_CACHE: dict[str, object] = {}  # Cache for ONNX Runtime sessions
 _SCORING_WEIGHTS: dict[str, float] = DEFAULT_SCORING_WEIGHTS.copy()
 _HASH_EMBEDDING_SKIP_VECTOR: bool = DEFAULT_HASH_EMBEDDING_SKIP_VECTOR
+_USE_RRF: bool = DEFAULT_USE_RRF
+_RRF_K: int = DEFAULT_RRF_K
 
 
 def configure_scoring_weights(weights: dict[str, float] | None = None) -> None:
@@ -92,6 +106,23 @@ def get_weight(key: str) -> float:
 def should_skip_vector_for_hash() -> bool:
     """Check if vector retrieval should be skipped when using hash embeddings."""
     return _HASH_EMBEDDING_SKIP_VECTOR
+
+
+def should_use_rrf() -> bool:
+    """Check if Reciprocal Rank Fusion should be used for hybrid retrieval."""
+    return _USE_RRF
+
+
+def get_rrf_k() -> int:
+    """Get the RRF constant k."""
+    return _RRF_K
+
+
+def configure_rrf(use_rrf: bool = True, k: int = 60) -> None:
+    """Configure RRF settings."""
+    global _USE_RRF, _RRF_K
+    _USE_RRF = use_rrf
+    _RRF_K = k
 
 
 TEXT_EXTENSIONS = {
