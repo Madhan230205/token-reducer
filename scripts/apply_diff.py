@@ -56,31 +56,32 @@ from typing import Literal
 # ---------------------------------------------------------------------------
 
 try:
-    import tree_sitter_python as _tspy
-    import tree_sitter_javascript as _tsjs
-    import tree_sitter_typescript as _tsts
-    import tree_sitter_java as _tsjava
-    import tree_sitter_go as _tsgo
-    import tree_sitter_rust as _tsrust
     import tree_sitter_c as _tsc
     import tree_sitter_cpp as _tscpp
+    import tree_sitter_go as _tsgo
+    import tree_sitter_java as _tsjava
+    import tree_sitter_javascript as _tsjs
+    import tree_sitter_python as _tspy
     import tree_sitter_ruby as _tsruby
-    from tree_sitter import Language, Parser as TSParser
+    import tree_sitter_rust as _tsrust
+    import tree_sitter_typescript as _tsts
+    from tree_sitter import Language
+    from tree_sitter import Parser as TSParser
 
     _TS_LANGUAGES: dict[str, Language] = {
-        "py":   Language(_tspy.language()),
-        "js":   Language(_tsjs.language()),
-        "jsx":  Language(_tsjs.language()),
-        "ts":   Language(_tsts.language_typescript()),
-        "tsx":  Language(_tsts.language_tsx()),
+        "py": Language(_tspy.language()),
+        "js": Language(_tsjs.language()),
+        "jsx": Language(_tsjs.language()),
+        "ts": Language(_tsts.language_typescript()),
+        "tsx": Language(_tsts.language_tsx()),
         "java": Language(_tsjava.language()),
-        "go":   Language(_tsgo.language()),
-        "rs":   Language(_tsrust.language()),
-        "c":    Language(_tsc.language()),
-        "h":    Language(_tsc.language()),
-        "cpp":  Language(_tscpp.language()),
-        "cc":   Language(_tscpp.language()),
-        "rb":   Language(_tsruby.language()),
+        "go": Language(_tsgo.language()),
+        "rs": Language(_tsrust.language()),
+        "c": Language(_tsc.language()),
+        "h": Language(_tsc.language()),
+        "cpp": Language(_tscpp.language()),
+        "cc": Language(_tscpp.language()),
+        "rb": Language(_tsruby.language()),
     }
     _TS_AVAILABLE = True
 except Exception:  # noqa: BLE001
@@ -92,44 +93,44 @@ except Exception:  # noqa: BLE001
 # ---------------------------------------------------------------------------
 
 _NODE_TYPES: dict[tuple[str, str], list[str]] = {
-    ("py",   "function"): ["function_definition"],
-    ("py",   "class"):    ["class_definition"],
-    ("py",   "method"):   ["function_definition"],
-    ("js",   "function"): ["function_declaration", "function_expression", "arrow_function"],
-    ("js",   "class"):    ["class_declaration"],
-    ("js",   "method"):   ["method_definition"],
-    ("jsx",  "function"): ["function_declaration", "function_expression", "arrow_function"],
-    ("jsx",  "class"):    ["class_declaration"],
-    ("jsx",  "method"):   ["method_definition"],
-    ("ts",   "function"): ["function_declaration", "arrow_function"],
-    ("ts",   "class"):    ["class_declaration"],
-    ("ts",   "method"):   ["method_definition", "public_field_definition"],
-    ("tsx",  "function"): ["function_declaration", "arrow_function"],
-    ("tsx",  "class"):    ["class_declaration"],
-    ("tsx",  "method"):   ["method_definition"],
+    ("py", "function"): ["function_definition"],
+    ("py", "class"): ["class_definition"],
+    ("py", "method"): ["function_definition"],
+    ("js", "function"): ["function_declaration", "function_expression", "arrow_function"],
+    ("js", "class"): ["class_declaration"],
+    ("js", "method"): ["method_definition"],
+    ("jsx", "function"): ["function_declaration", "function_expression", "arrow_function"],
+    ("jsx", "class"): ["class_declaration"],
+    ("jsx", "method"): ["method_definition"],
+    ("ts", "function"): ["function_declaration", "arrow_function"],
+    ("ts", "class"): ["class_declaration"],
+    ("ts", "method"): ["method_definition", "public_field_definition"],
+    ("tsx", "function"): ["function_declaration", "arrow_function"],
+    ("tsx", "class"): ["class_declaration"],
+    ("tsx", "method"): ["method_definition"],
     ("java", "function"): ["method_declaration"],
-    ("java", "class"):    ["class_declaration"],
-    ("java", "method"):   ["method_declaration"],
-    ("go",   "function"): ["function_declaration"],
-    ("go",   "class"):    ["type_declaration"],
-    ("go",   "method"):   ["method_declaration"],
-    ("rs",   "function"): ["function_item"],
-    ("rs",   "class"):    ["struct_item", "impl_item"],
-    ("rs",   "method"):   ["function_item"],
-    ("c",    "function"): ["function_definition"],
-    ("c",    "class"):    ["struct_specifier"],
-    ("c",    "method"):   ["function_definition"],
-    ("h",    "function"): ["function_definition"],
-    ("h",    "class"):    ["struct_specifier"],
-    ("cpp",  "function"): ["function_definition"],
-    ("cpp",  "class"):    ["class_specifier"],
-    ("cpp",  "method"):   ["function_definition"],
-    ("cc",   "function"): ["function_definition"],
-    ("cc",   "class"):    ["class_specifier"],
-    ("cc",   "method"):   ["function_definition"],
-    ("rb",   "function"): ["method"],
-    ("rb",   "class"):    ["class"],
-    ("rb",   "method"):   ["method", "singleton_method"],
+    ("java", "class"): ["class_declaration"],
+    ("java", "method"): ["method_declaration"],
+    ("go", "function"): ["function_declaration"],
+    ("go", "class"): ["type_declaration"],
+    ("go", "method"): ["method_declaration"],
+    ("rs", "function"): ["function_item"],
+    ("rs", "class"): ["struct_item", "impl_item"],
+    ("rs", "method"): ["function_item"],
+    ("c", "function"): ["function_definition"],
+    ("c", "class"): ["struct_specifier"],
+    ("c", "method"): ["function_definition"],
+    ("h", "function"): ["function_definition"],
+    ("h", "class"): ["struct_specifier"],
+    ("cpp", "function"): ["function_definition"],
+    ("cpp", "class"): ["class_specifier"],
+    ("cpp", "method"): ["function_definition"],
+    ("cc", "function"): ["function_definition"],
+    ("cc", "class"): ["class_specifier"],
+    ("cc", "method"): ["function_definition"],
+    ("rb", "function"): ["method"],
+    ("rb", "class"): ["class"],
+    ("rb", "method"): ["method", "singleton_method"],
 }
 
 
@@ -183,13 +184,15 @@ def parse_diff_blocks(content: str) -> list[DiffBlock]:
 
     for match in _SEARCH_REPLACE_RE.finditer(content):
         file_path = match.group(1).strip() if match.group(1) else None
-        blocks.append(DiffBlock(
-            kind="search_replace",
-            file_path=file_path,
-            search=match.group(2),
-            replace=match.group(3),
-            line_number=content[: match.start()].count("\n") + 1,
-        ))
+        blocks.append(
+            DiffBlock(
+                kind="search_replace",
+                file_path=file_path,
+                search=match.group(2),
+                replace=match.group(3),
+                line_number=content[: match.start()].count("\n") + 1,
+            )
+        )
 
     for match in _AST_BLOCK_RE.finditer(content):
         raw_kind = match.group(1).lower()
@@ -197,13 +200,15 @@ def parse_diff_blocks(content: str) -> list[DiffBlock]:
         target_name = match.group(2).strip()
         file_path = match.group(3).strip() if match.group(3) else None
         new_code = match.group(4)
-        blocks.append(DiffBlock(
-            kind=kind,
-            file_path=file_path,
-            target_name=target_name,
-            new_code=new_code,
-            line_number=content[: match.start()].count("\n") + 1,
-        ))
+        blocks.append(
+            DiffBlock(
+                kind=kind,
+                file_path=file_path,
+                target_name=target_name,
+                new_code=new_code,
+                line_number=content[: match.start()].count("\n") + 1,
+            )
+        )
 
     blocks.sort(key=lambda b: b.line_number)
     return blocks
@@ -214,11 +219,10 @@ def parse_diff_blocks(content: str) -> list[DiffBlock]:
 # Return (success, message, new_content)
 # ---------------------------------------------------------------------------
 
-def _patch_content_search_replace(
-    block: DiffBlock, content: str
-) -> tuple[bool, str, str]:
+
+def _patch_content_search_replace(block: DiffBlock, content: str) -> tuple[bool, str, str]:
     if block.search not in content:
-        return False, f"Search text not found", content
+        return False, "Search text not found", content
 
     occurrences = content.count(block.search)
     if occurrences > 1:
@@ -254,9 +258,7 @@ def _find_method_in_class(root, class_name: str, method_name: str, ext: str):
     return None
 
 
-def _patch_content_ast(
-    block: DiffBlock, content: str, ext: str
-) -> tuple[bool, str, str]:
+def _patch_content_ast(block: DiffBlock, content: str, ext: str) -> tuple[bool, str, str]:
     if not _TS_AVAILABLE:
         return _patch_content_ast_fallback(block, content)
 
@@ -277,15 +279,19 @@ def _patch_content_ast(
     else:
         kind_key = {
             "replace_function": "function",
-            "replace_class":    "class",
-            "replace_method":   "method",
+            "replace_class": "class",
+            "replace_method": "method",
         }[block.kind]
         node_types = _get_node_types(ext, kind_key)
         matches = _find_named_nodes(tree.root_node, node_types, block.target_name)
         if not matches:
             return False, f"'{block.target_name}' not found", content
         if len(matches) > 1:
-            return False, f"'{block.target_name}' found {len(matches)} times (must be unique)", content
+            return (
+                False,
+                f"'{block.target_name}' found {len(matches)} times (must be unique)",
+                content,
+            )
         node = matches[0]
 
     start_byte = node.start_byte
@@ -317,9 +323,7 @@ def _patch_content_ast(
     return True, f"AST-replaced {kind_label} '{block.target_name}'", new_src_bytes.decode("utf-8")
 
 
-def _patch_content_ast_fallback(
-    block: DiffBlock, content: str
-) -> tuple[bool, str, str]:
+def _patch_content_ast_fallback(block: DiffBlock, content: str) -> tuple[bool, str, str]:
     """Heuristic fallback when tree-sitter is unavailable."""
     name = block.target_name.split(".")[-1]
     patterns = [
@@ -357,9 +361,7 @@ def _patch_content_ast_fallback(
     return True, f"Heuristic-replaced '{name}' (tree-sitter unavailable)", new_content
 
 
-def _patch_content(
-    block: DiffBlock, content: str, ext: str
-) -> tuple[bool, str, str]:
+def _patch_content(block: DiffBlock, content: str, ext: str) -> tuple[bool, str, str]:
     """Dispatch to the correct patcher and return (ok, msg, new_content)."""
     if block.kind == "search_replace":
         return _patch_content_search_replace(block, content)
@@ -373,6 +375,7 @@ def _patch_content(
 # if every block targeting it succeeds.  On any failure the original content
 # is preserved on disk (transaction rollback).
 # ---------------------------------------------------------------------------
+
 
 def apply_diffs(
     content: str,
@@ -403,14 +406,12 @@ def apply_diffs(
 
     for block in orphans:
         results["failed"] += 1
-        results["messages"].append(
-            f"Block at line {block.line_number}: No file path specified"
-        )
+        results["messages"].append(f"Block at line {block.line_number}: No file path specified")
 
     # Process each file as a transaction
     for target, file_blocks in file_groups.items():
         if not target.exists():
-            for b in file_blocks:
+            for _ in file_blocks:
                 results["failed"] += 1
                 results["messages"].append(f"File not found: {target}")
             continue
@@ -418,7 +419,7 @@ def apply_diffs(
         try:
             original = target.read_text(encoding="utf-8")
         except Exception as exc:
-            for b in file_blocks:
+            for _ in file_blocks:
                 results["failed"] += 1
             results["messages"].append(f"Failed to read {target}: {exc}")
             continue
@@ -446,9 +447,7 @@ def apply_diffs(
         if tx_ok:
             if dry_run:
                 results["applied"] += len(file_blocks)
-                results["messages"].extend(
-                    f"[DRY RUN] {m}" for m in tx_messages
-                )
+                results["messages"].extend(f"[DRY RUN] {m}" for m in tx_messages)
             else:
                 try:
                     target.write_text(current, encoding="utf-8")
@@ -459,7 +458,6 @@ def apply_diffs(
                     results["messages"].append(f"Failed to write {target}: {exc}")
         else:
             # Entire file transaction failed — original untouched on disk
-            applied_before = sum(1 for m in tx_messages if "rolled back" not in m and "not found" not in m and not m.endswith(tx_messages[-1]))
             results["failed"] += len(file_blocks)
             results["messages"].extend(tx_messages)
             results["messages"].append(
@@ -472,6 +470,7 @@ def apply_diffs(
 # ---------------------------------------------------------------------------
 # Legacy single-block helper (used by tests / external callers)
 # ---------------------------------------------------------------------------
+
 
 def apply_block(block: DiffBlock, target_file: Path, dry_run: bool = False) -> tuple[bool, str]:
     """Apply a single block to a file.  Not transactional — prefer apply_diffs."""
@@ -498,6 +497,7 @@ def apply_block(block: DiffBlock, target_file: Path, dry_run: bool = False) -> t
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -533,6 +533,7 @@ def main() -> int:
 
     if args.json:
         import json as _json
+
         print(_json.dumps(results, indent=2))
     else:
         for msg in results["messages"]:

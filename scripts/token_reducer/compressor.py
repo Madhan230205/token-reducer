@@ -3,10 +3,15 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .config import get_weight
-from .models import Candidate
 from .chunker import estimate_tokens, is_code_file, tokenize
-from .embeddings import embed_text
+from .config import get_weight
+from .models import (
+    Candidate,
+    CandidateSummary,
+    ContextPacket,
+    RetrievalInfo,
+    TokenMetrics,
+)
 
 
 def split_sentences(text: str) -> list[str]:
@@ -14,7 +19,9 @@ def split_sentences(text: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
-def textrank_score_sentences(sentences: list[str], damping: float = 0.85, iterations: int = 30) -> list[tuple[float, str]]:
+def textrank_score_sentences(
+    sentences: list[str], damping: float = 0.85, iterations: int = 30
+) -> list[tuple[float, str]]:
     """Score sentences using TextRank algorithm for extractive summarization.
 
     TextRank builds a graph where sentences are nodes and edges are weighted
@@ -64,7 +71,7 @@ def textrank_score_sentences(sentences: list[str], damping: float = 0.85, iterat
     if max_score > 0:
         scores = [s / max_score for s in scores]
 
-    return list(zip(scores, sentences))
+    return list(zip(scores, sentences, strict=False))
 
 
 def cluster_chunks_semantically(
@@ -183,7 +190,7 @@ def merge_adjacent_candidates(candidates: list[Candidate]) -> list[Candidate]:
         by_source.setdefault(c.source, []).append(c)
 
     merged: list[Candidate] = []
-    for source, group in by_source.items():
+    for _source, group in by_source.items():
         group.sort(key=lambda c: c.chunk_index)
         run: list[Candidate] = [group[0]]
 
@@ -222,7 +229,21 @@ def _merge_run(run: list[Candidate]) -> Candidate:
     )
 
 
-def compress_candidates(query: str, candidates: list[Candidate], word_budget: int) -> list[str]:
+def compress_candidates(
+    query: str,
+    candidates: list[Candidate],
+    word_budget: int,
+    relevance_floor: float = 0.15,
+) -> list[str]:
+    """Compress candidate chunks into citation-rich summary bullets.
+
+    Args:
+        query: The user query for relevance scoring.
+        candidates: Ranked candidates from retrieval.
+        word_budget: Maximum words in compressed output.
+        relevance_floor: Minimum final_score threshold. Chunks below this
+            score are rejected to preserve context purity and API costs.
+    """
     # Merge adjacent chunks before compression to eliminate overlap redundancy
     candidates = merge_adjacent_candidates(candidates)
 
@@ -235,6 +256,10 @@ def compress_candidates(query: str, candidates: list[Candidate], word_budget: in
     length_normalizer = get_weight("sentence_length_normalizer")
 
     for candidate in candidates:
+        # Knapsack Relevance Floor: if the chunk's score is too low, STOP packing.
+        # This prevents pulling in noise just to hit a budget.
+        if candidate.final_score < relevance_floor:
+            break
         source_is_code = is_code_file(candidate.source)
 
         if source_is_code:
@@ -242,7 +267,7 @@ def compress_candidates(query: str, candidates: list[Candidate], word_budget: in
             snippets = extract_code_signatures(candidate.text)
             if not snippets:
                 # Fallback: use first N lines preserving code structure
-                code_lines = [l for l in candidate.text.splitlines() if l.strip()]
+                code_lines = [line for line in candidate.text.splitlines() if line.strip()]
                 snippets = code_lines[:5] if code_lines else []
             if not snippets:
                 continue
@@ -267,7 +292,11 @@ def compress_candidates(query: str, candidates: list[Candidate], word_budget: in
                 query_signal = overlap / float(len(query_terms)) if query_terms else 0.0
                 length_bonus = min(1.0, len(sentence.split()) / length_normalizer)
                 # Combine TextRank centrality with query relevance
-                combined_score = (textrank_w * tr_score) + (query_relevance_w * query_signal) + (length_bonus_w * length_bonus)
+                combined_score = (
+                    (textrank_w * tr_score)
+                    + (query_relevance_w * query_signal)
+                    + (length_bonus_w * length_bonus)
+                )
                 scored_sentences.append((combined_score, sentence))
 
             scored_sentences.sort(key=lambda pair: pair[0], reverse=True)
@@ -299,7 +328,9 @@ def compress_candidates(query: str, candidates: list[Candidate], word_budget: in
     for candidate in candidates[:3]:
         snippet = " ".join(candidate.text.split()[:35]).strip()
         if snippet:
-            fallback.append(f"{snippet}... [{Path(candidate.source).name}#chunk-{candidate.chunk_index}]")
+            fallback.append(
+                f"{snippet}... [{Path(candidate.source).name}#chunk-{candidate.chunk_index}]"
+            )
     return fallback
 
 
@@ -317,7 +348,7 @@ def build_packet(
     vector_retrieval_path: str,
     referenced_symbols: list[dict] | None = None,
     imported_context: list[Candidate] | None = None,
-) -> dict:
+) -> ContextPacket:
     source_count = len({c.source for c in selected})
     candidate_pool_tokens = sum(c.token_estimate for c in candidate_pool)
     selected_token_estimate = sum(c.token_estimate for c in selected)
@@ -357,46 +388,52 @@ def build_packet(
         lines.append(f"- {bullet}")
     lines.extend(["", "CONTEXT_PACKET_END"])
 
-    return {
-        "query": query,
-        "selected_chunks": len(selected),
-        "source_count": source_count,
-        "estimated_token_savings": estimated_savings,
-        "retrieval": {
-            "mode": retrieval_mode,
-            "hybrid_mode": hybrid_mode,
-            "bm25_enabled": True,
-            "fts_hits": fts_hit_count,
-            "vector_hits": vector_hit_count,
-            "vector_backend_used": vector_backend_used,
-            "vector_model_used": vector_model_used,
-            "vector_retrieval_path": vector_retrieval_path,
-            "candidate_pool_size": len(candidate_pool),
-        },
-        "token_metrics": {
-            "candidate_pool_tokens": candidate_pool_tokens,
-            "selected_chunk_tokens": selected_token_estimate,
-            "compressed_tokens": compressed_token_estimate,
-            "payload_tokens": compressed_token_estimate,
-            "savings_from_selected_tokens": estimated_savings,
-            "savings_from_candidate_pool_tokens": savings_from_pool,
-            "savings_from_candidate_pool_pct": savings_pct_pool,
-        },
-        "bullets": bullets,
-        "candidates": [
-            {
-                "chunk_id": c.chunk_id,
-                "source": c.source,
-                "chunk_index": c.chunk_index,
-                "bm25_score": round(float(c.bm25_score), 6) if c.bm25_score is not None else None,
-                "fts_score": round(c.fts_score, 6),
-                "vector_score": round(c.vector_score, 6),
-                "overlap_score": round(c.overlap_score, 6),
-                "final_score": round(c.final_score, 6),
-                "fts_rank": c.fts_rank,
-                "vector_rank": c.vector_rank,
-            }
-            for c in selected
-        ],
-        "packet": "\n".join(lines),
-    }
+    retrieval = RetrievalInfo(
+        mode=retrieval_mode,
+        hybrid_mode=hybrid_mode,
+        bm25_enabled=True,
+        fts_hits=fts_hit_count,
+        vector_hits=vector_hit_count,
+        vector_backend_used=vector_backend_used,
+        vector_model_used=vector_model_used,
+        vector_retrieval_path=vector_retrieval_path,
+        candidate_pool_size=len(candidate_pool),
+    )
+
+    token_metrics = TokenMetrics(
+        candidate_pool_tokens=candidate_pool_tokens,
+        selected_chunk_tokens=selected_token_estimate,
+        compressed_tokens=compressed_token_estimate,
+        payload_tokens=compressed_token_estimate,
+        savings_from_selected_tokens=estimated_savings,
+        savings_from_candidate_pool_tokens=savings_from_pool,
+        savings_from_candidate_pool_pct=savings_pct_pool,
+    )
+
+    candidates = [
+        CandidateSummary(
+            chunk_id=c.chunk_id,
+            source=c.source,
+            chunk_index=c.chunk_index,
+            bm25_score=round(float(c.bm25_score), 6) if c.bm25_score is not None else None,
+            fts_score=round(c.fts_score, 6),
+            vector_score=round(c.vector_score, 6),
+            overlap_score=round(c.overlap_score, 6),
+            final_score=round(c.final_score, 6),
+            fts_rank=c.fts_rank,
+            vector_rank=c.vector_rank,
+        )
+        for c in selected
+    ]
+
+    return ContextPacket(
+        query=query,
+        selected_chunks=len(selected),
+        source_count=source_count,
+        estimated_token_savings=estimated_savings,
+        retrieval=retrieval,
+        token_metrics=token_metrics,
+        bullets=bullets,
+        candidates=candidates,
+        packet="\n".join(lines),
+    )

@@ -5,20 +5,19 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from .ann import query_faiss_index, query_hnsw_index
 from .config import (
-    ADAPTIVE_TIER_SMALL_CHUNKS,
-    ADAPTIVE_TIER_MEDIUM_CHUNKS,
     _EMBEDDING_VECTOR_CACHE,
+    ADAPTIVE_TIER_MEDIUM_CHUNKS,
+    ADAPTIVE_TIER_SMALL_CHUNKS,
     get_weight,
-    should_skip_vector_for_hash,
 )
-from .models import Candidate, embedding_cache_key, hash_text
-from .embeddings import embed_text, cosine_similarity
 from .db import (
     get_cached_query_embedding,
     set_cached_query_embedding,
 )
-from .ann import query_hnsw_index, query_faiss_index
+from .embeddings import cosine_similarity, embed_text
+from .models import Candidate, embedding_cache_key, hash_text
 
 
 def infer_retrieval_tier(conn: sqlite3.Connection) -> str:
@@ -45,6 +44,7 @@ def infer_retrieval_tier(conn: sqlite3.Connection) -> str:
 
 def build_fts_query(query: str) -> str:
     from .chunker import tokenize
+
     terms = tokenize(query)[:20]
     if not terms:
         return query.strip()
@@ -77,6 +77,7 @@ def fts_retrieve(conn: sqlite3.Connection, query: str, limit: int) -> list[Candi
         ).fetchall()
     except sqlite3.OperationalError:
         from .chunker import tokenize
+
         safe = " ".join(tokenize(query)[:20])
         if not safe:
             return []
@@ -312,6 +313,7 @@ def bm25_to_score(bm25_value: float | None) -> float:
 
 def overlap_ratio(query: str, text: str) -> float:
     from .chunker import tokenize
+
     q_terms = set(tokenize(query))
     if not q_terms:
         return 0.0
@@ -350,13 +352,20 @@ def rerank_candidates(
         lexical_rank_signal = rank_score(item.fts_rank)
         bm25_signal = bm25_to_score(item.bm25_score)
         item.fts_score = (fts_lexical_w * lexical_rank_signal) + (fts_bm25_w * bm25_signal)
-        item.vector_score = item.vector_score if item.vector_score > 0 else rank_score(item.vector_rank)
+        item.vector_score = (
+            item.vector_score if item.vector_score > 0 else rank_score(item.vector_rank)
+        )
         item.overlap_score = overlap_ratio(query, item.text)
-        item.final_score = (final_fts_w * item.fts_score) + (final_vector_w * item.vector_score) + (final_overlap_w * item.overlap_score)
+        item.final_score = (
+            (final_fts_w * item.fts_score)
+            + (final_vector_w * item.vector_score)
+            + (final_overlap_w * item.overlap_score)
+        )
 
     ranked.sort(key=lambda c: c.final_score, reverse=True)
-    bounded_top_k = max(3, min(top_k, 5))
-    return ranked[:bounded_top_k], ranked
+    # Allow full top_k pool to pass to the compressor;
+    # relevance floor in compressor will filter low-quality chunks
+    return ranked[:top_k], ranked
 
 
 def get_query_embedding(

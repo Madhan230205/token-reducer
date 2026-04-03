@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import math
 import sys
-from typing import Sequence
-
-from .config import _EMBEDDING_MODEL_CACHE, _EMBEDDING_VECTOR_CACHE, get_weight
-from .chunker import tokenize, char_ngrams
+from collections.abc import Sequence
 from hashlib import blake2b
+
+from .chunker import char_ngrams, tokenize
+from .config import _EMBEDDING_MODEL_CACHE, get_weight
 
 
 def embed_text_hash(text: str, dimensions: int) -> list[float]:
@@ -114,4 +114,4 @@ def embed_text(
 def cosine_similarity(vec_a: Sequence[float], vec_b: Sequence[float]) -> float:
     if not vec_a or not vec_b or len(vec_a) != len(vec_b):
         return 0.0
-    return float(sum(a * b for a, b in zip(vec_a, vec_b)))
+    return float(sum(a * b for a, b in zip(vec_a, vec_b, strict=False)))

@@ -9,7 +9,7 @@ DEFAULT_CHUNK_OVERLAP = 40
 DEFAULT_DIMENSIONS = 256
 DEFAULT_FTS_K = 12
 DEFAULT_VECTOR_K = 20
-DEFAULT_TOP_K = 5
+DEFAULT_TOP_K = 50  # Expanded pool size; relevance floor handles cutoff
 DEFAULT_MIN_FTS_HITS = 3
 DEFAULT_WORD_BUDGET = 350
 DEFAULT_HYBRID_MODE = "fallback"
@@ -19,6 +19,7 @@ DEFAULT_EMBEDDING_MODEL = "jinaai/jina-embeddings-v2-base-code"
 DEFAULT_ANN_ENGINE = "hnsw"
 DEFAULT_ANN_EF_SEARCH = 160
 DEFAULT_QUERY_CACHE_TTL_SECONDS = 900
+DEFAULT_RELEVANCE_FLOOR = 0.15  # Minimum score threshold for knapsack packing
 
 # Adaptive retrieval tiers — determined at runtime from indexed chunk count.
 # Small  (<  TIER_SMALL_CHUNKS)  → FTS5 only; no embeddings used for retrieval, no ANN built.
@@ -78,6 +79,7 @@ def configure_hash_skip_vector(skip: bool) -> None:
 def _camel_to_snake(name: str) -> str:
     """Convert camelCase to snake_case."""
     import re
+
     s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
@@ -129,8 +131,24 @@ TEXT_EXTENSIONS = {
 }
 
 CODE_EXTENSIONS = {
-    ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".kt", ".go", ".rs",
-    ".c", ".h", ".cpp", ".cs", ".php", ".rb", ".swift", ".sh", ".ps1",
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".java",
+    ".kt",
+    ".go",
+    ".rs",
+    ".c",
+    ".h",
+    ".cpp",
+    ".cs",
+    ".php",
+    ".rb",
+    ".swift",
+    ".sh",
+    ".ps1",
 }
 
 IGNORED_FILENAMES = {
@@ -149,20 +167,22 @@ IGNORED_FILENAMES = {
 
 # Import graph extraction patterns
 _IMPORT_PATTERNS: dict[str, re.Pattern[str]] = {
-    ".py": re.compile(
-        r"^(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))", re.MULTILINE
-    ),
+    ".py": re.compile(r"^(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))", re.MULTILINE),
     ".js": re.compile(
-        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))", re.MULTILINE
+        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))",
+        re.MULTILINE,
     ),
     ".ts": re.compile(
-        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))", re.MULTILINE
+        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))",
+        re.MULTILINE,
     ),
     ".tsx": re.compile(
-        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))", re.MULTILINE
+        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))",
+        re.MULTILINE,
     ),
     ".jsx": re.compile(
-        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))", re.MULTILINE
+        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))",
+        re.MULTILINE,
     ),
     ".go": re.compile(r'import\s+(?:\(\s*)?["\']([^"\']+)["\']', re.MULTILINE),
     ".rs": re.compile(r"(?:use\s+([\w:]+)|mod\s+(\w+))", re.MULTILINE),
@@ -170,7 +190,9 @@ _IMPORT_PATTERNS: dict[str, re.Pattern[str]] = {
     ".c": re.compile(r'#include\s*[<"]([^>"]+)[>"]', re.MULTILINE),
     ".h": re.compile(r'#include\s*[<"]([^>"]+)[>"]', re.MULTILINE),
     ".cpp": re.compile(r'#include\s*[<"]([^>"]+)[>"]', re.MULTILINE),
-    ".rb": re.compile(r"(?:require\s+['\"]([^'\"]+)['\"]|require_relative\s+['\"]([^'\"]+)['\"])", re.MULTILINE),
+    ".rb": re.compile(
+        r"(?:require\s+['\"]([^'\"]+)['\"]|require_relative\s+['\"]([^'\"]+)['\"])", re.MULTILINE
+    ),
 }
 
 # Function call extraction pattern (language-agnostic)
