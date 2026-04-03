@@ -567,16 +567,16 @@ def benchmark(
                 word_budget=word_budget,
             )
             q_latency_ms = (time.perf_counter() - q_start) * 1000
-            compressed_tokens = result.get("token_metrics", {}).get("compressed_tokens", 0)
-            selected_tokens = result.get("token_metrics", {}).get("selected_chunk_tokens", 0)
+            compressed_tokens = result.token_metrics.compressed_tokens
+            selected_tokens = result.token_metrics.selected_chunk_tokens
             compressed_tokens_total += compressed_tokens
             query_metrics.append(
                 {
                     "query": q,
                     "latency_ms": round(q_latency_ms, 2),
-                    "fts_hits": result.get("retrieval", {}).get("fts_hits", 0),
-                    "vector_hits": result.get("retrieval", {}).get("vector_hits", 0),
-                    "selected_chunks": result.get("selected_chunks", 0),
+                    "fts_hits": result.retrieval.fts_hits,
+                    "vector_hits": result.retrieval.vector_hits,
+                    "selected_chunks": result.selected_chunks,
                     "selected_tokens": selected_tokens,
                     "compressed_tokens": compressed_tokens,
                     "compression_ratio": round(selected_tokens / max(1, compressed_tokens), 2),
@@ -641,6 +641,108 @@ def benchmark(
     err.print(f"  Token savings:          [green]{savings_pct:.1f}%[/green]")
     err.print(f"  Avg query latency:      {avg_query_latency:.1f} ms")
     err.print(f"  Cost savings / 100q:    [green]${cost_savings * 100:.2f}[/green]")
+
+
+@app.command("benchmark-full")
+def benchmark_full(
+    inputs: Annotated[
+        list[str], typer.Option("--inputs", help="Files or directories to benchmark.")
+    ],
+    db: DbOpt = str(DEFAULT_DB_PATH),
+    chunk_size: ChunkSizeOpt = DEFAULT_CHUNK_SIZE,
+    overlap: OverlapOpt = DEFAULT_CHUNK_OVERLAP,
+    embedding_backend: EmbBackendOpt = DEFAULT_EMBEDDING_BACKEND,
+    embedding_model: EmbModelOpt = DEFAULT_EMBEDDING_MODEL,
+    dimensions: DimensionsOpt = DEFAULT_DIMENSIONS,
+    top_k: TopKOpt = DEFAULT_TOP_K,
+    fts_k: FtsKOpt = DEFAULT_FTS_K,
+    vector_k: VectorKOpt = DEFAULT_VECTOR_K,
+    hybrid_mode: HybridModeOpt = DEFAULT_HYBRID_MODE,
+    word_budget: WordBudgetOpt = DEFAULT_WORD_BUDGET,
+    iterations: Annotated[int, typer.Option("--iterations", help="Runs per query for latency stats.")] = 3,
+    output_format: Annotated[str, typer.Option("--format", help="json | markdown")] = "json",
+    skip_accuracy: Annotated[bool, typer.Option("--skip-accuracy", help="Skip accuracy metrics.")] = False,
+    skip_stress: Annotated[bool, typer.Option("--skip-stress", help="Skip stress test queries.")] = False,
+) -> None:
+    """Run comprehensive benchmarks with accuracy metrics, latency percentiles, and cost analysis.
+
+    This command provides scientifically rigorous benchmarks including:
+    - Before/after token counts with baseline comparison
+    - Latency impact (p50/p95/p99)
+    - Accuracy metrics (Precision@K, Recall@K, MRR, NDCG)
+    - Real dollar savings projections
+
+    Examples:
+        # Run full benchmark suite
+        token-reducer benchmark-full --inputs ./src
+
+        # Generate markdown report
+        token-reducer benchmark-full --inputs ./src --format markdown
+
+        # Quick benchmark (skip accuracy tests)
+        token-reducer benchmark-full --inputs ./src --skip-accuracy
+    """
+    from .benchmark import (
+        BenchmarkConfig,
+        format_benchmark_json,
+        format_benchmark_markdown,
+        run_comprehensive_benchmark,
+    )
+
+    db_path = Path(db).expanduser().resolve()
+    input_paths = [Path(p).expanduser().resolve() for p in inputs]
+
+    valid_inputs = [p for p in input_paths if p.exists()]
+    if not valid_inputs:
+        err.print("[red]No valid input paths found.[/red]")
+        raise typer.Exit(1)
+
+    config = BenchmarkConfig(
+        inputs=valid_inputs,
+        db_path=db_path,
+        top_k=top_k,
+        fts_k=fts_k,
+        vector_k=vector_k,
+        hybrid_mode=hybrid_mode,
+        embedding_backend=embedding_backend,
+        embedding_model=embedding_model,
+        dimensions=dimensions,
+        chunk_size=chunk_size,
+        overlap=overlap,
+        word_budget=word_budget,
+        num_iterations=iterations,
+    )
+
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=err) as progress:
+        progress.add_task("Running comprehensive benchmark suite…")
+
+        try:
+            report = run_comprehensive_benchmark(
+                config=config,
+                include_accuracy=not skip_accuracy,
+                include_stress=not skip_stress,
+            )
+        except ValueError as e:
+            err.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(1)
+
+    if output_format == "markdown":
+        typer.echo(format_benchmark_markdown(report))
+    else:
+        typer.echo(format_benchmark_json(report))
+
+    # Print summary to stderr
+    err.print("\n[bold]COMPREHENSIVE BENCHMARK RESULTS[/bold]")
+    err.print(f"  Files indexed:          {report['benchmark_summary']['files_indexed']}")
+    err.print(f"  Baseline tokens:        {report['baseline_comparison']['baseline_tokens']:,}")
+    err.print(f"  Compressed tokens/query: ~{report['baseline_comparison']['avg_compressed_tokens_per_query']:,.0f}")
+    err.print(f"  Token reduction:        [green]{report['baseline_comparison']['reduction_vs_baseline_pct']}%[/green]")
+    err.print(f"  p50 latency:            {report['latency_metrics']['p50_query_ms']} ms")
+    err.print(f"  p95 latency:            {report['latency_metrics']['p95_query_ms']} ms")
+    if not skip_accuracy:
+        err.print(f"  Precision@K:            {report['accuracy_metrics']['precision_at_k']}")
+        err.print(f"  Recall@K:               {report['accuracy_metrics']['recall_at_k']}")
+    err.print(f"  Cost savings/100q:      [green]${report['cost_analysis']['savings_per_100_queries_usd']:.2f}[/green]")
 
 
 # ---------------------------------------------------------------------------
