@@ -14,8 +14,8 @@ DEFAULT_MIN_FTS_HITS = 3
 DEFAULT_WORD_BUDGET = 350
 DEFAULT_HYBRID_MODE = "fallback"
 DEFAULT_RETRIEVAL_MODE = "compact"
-DEFAULT_EMBEDDING_BACKEND = "hash"
-DEFAULT_EMBEDDING_MODEL = "jinaai/jina-embeddings-v2-base-code"
+DEFAULT_EMBEDDING_BACKEND = "onnx"
+DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_ANN_ENGINE = "hnsw"
 DEFAULT_ANN_EF_SEARCH = 160
 DEFAULT_QUERY_CACHE_TTL_SECONDS = 900
@@ -23,7 +23,7 @@ DEFAULT_RELEVANCE_FLOOR = 0.15  # Minimum score threshold for knapsack packing
 
 # ONNX Runtime settings for fast CPU-based dense embeddings
 # Model path can be local file or HuggingFace hub model ID
-DEFAULT_ONNX_MODEL_PATH = "jinaai/jina-embeddings-v2-base-code"
+DEFAULT_ONNX_MODEL_PATH = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_ONNX_MAX_LENGTH = 512  # Max sequence length for tokenization
 
 # Reciprocal Rank Fusion (RRF) settings

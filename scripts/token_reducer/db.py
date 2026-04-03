@@ -469,14 +469,15 @@ def index_file_dependencies(
     for import_path in imports:
         resolved = resolve_import_to_file(import_path, file_path, indexed_files)
         try:
-            conn.execute(
+            cur = conn.execute(
                 """
                 INSERT OR IGNORE INTO file_dependencies (source_file, target_import, resolved_file)
                 VALUES (?, ?, ?)
                 """,
                 (file_path, import_path, resolved),
             )
-            count += 1
+            if cur.rowcount > 0:
+                count += 1
         except Exception:
             continue
 

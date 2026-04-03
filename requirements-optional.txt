@@ -9,6 +9,7 @@ faiss-cpu>=1.8.0
 # ONNX Runtime for fast, lightweight dense embeddings (preferred over sentence-transformers)
 onnxruntime>=1.17.0
 tokenizers>=0.15.0
+huggingface_hub>=0.20.0
 
 # Tree-sitter for AST-based code chunking (semantic code boundaries)
 tree-sitter>=0.21.0
