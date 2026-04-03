@@ -1,6 +1,6 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "Madhan230205-token-reducer",
+  "name": "Madhan230205-claude-token-reducer",
   "owner": {
     "name": "Madhan230205"
   },
@@ -10,7 +10,7 @@
   },
   "plugins": [
     {
-      "name": "token-reducer",
+      "name": "claude-token-reducer",
       "version": "1.4.0",
       "source": "./",
       "description": "Open-source local-first token reduction plugin for Claude Code with BM25 + vector hybrid retrieval, reranking, AST chunking, and compressed context packets."
