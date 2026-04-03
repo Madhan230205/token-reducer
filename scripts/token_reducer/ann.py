@@ -4,9 +4,9 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .config import DEFAULT_ANN_ENGINE, DEFAULT_ANN_EF_SEARCH
-from .models import ann_artifact_prefix, utc_now_iso
+from .config import DEFAULT_ANN_EF_SEARCH, DEFAULT_ANN_ENGINE
 from .db import get_index_fingerprint
+from .models import ann_artifact_prefix, utc_now_iso
 
 
 def try_import_hnsw_modules():
@@ -179,7 +179,7 @@ def query_hnsw_index(
     k = min(max(1, limit), current_count)
     labels, distances = idx.knn_query(np.array([query_vec], dtype=np.float32), k=k)
     results: list[tuple[int, float]] = []
-    for label, distance in zip(labels[0], distances[0]):
+    for label, distance in zip(labels[0], distances[0], strict=False):
         if int(label) < 0:
             continue
         sim = max(0.0, 1.0 - float(distance))
@@ -191,6 +191,7 @@ def try_import_faiss():
     try:
         import faiss  # type: ignore
         import numpy as np  # type: ignore
+
         return faiss, np
     except Exception:
         return None, None
@@ -204,12 +205,16 @@ def build_faiss_index(
     model_name: str | None,
 ) -> bool:
     import math
+
     faiss, np = try_import_faiss()
     if faiss is None or np is None:
         return False
 
     rows = fetch_embeddings_for_ann(
-        conn=conn, backend=backend, dimensions=dimensions, model_name=model_name,
+        conn=conn,
+        backend=backend,
+        dimensions=dimensions,
+        model_name=model_name,
     )
     if not rows:
         return False
@@ -230,7 +235,10 @@ def build_faiss_index(
         return False
 
     prefix = ann_artifact_prefix(
-        db_path=db_path, backend=backend, dimensions=dimensions, model_name=model_name,
+        db_path=db_path,
+        backend=backend,
+        dimensions=dimensions,
+        model_name=model_name,
     )
     index_path = prefix.with_suffix(".faiss.bin")
     meta_path = prefix.with_suffix(".faiss.meta.json")
@@ -281,7 +289,10 @@ def query_faiss_index(
 
     dimensions = len(query_vec)
     prefix = ann_artifact_prefix(
-        db_path=db_path, backend=backend, dimensions=dimensions, model_name=model_name,
+        db_path=db_path,
+        backend=backend,
+        dimensions=dimensions,
+        model_name=model_name,
     )
     index_path = prefix.with_suffix(".faiss.bin")
     meta_path = prefix.with_suffix(".faiss.meta.json")
@@ -289,8 +300,11 @@ def query_faiss_index(
 
     if not index_path.exists() or not meta_path.exists():
         built = build_faiss_index(
-            conn=conn, db_path=db_path, backend=backend,
-            dimensions=dimensions, model_name=model_name,
+            conn=conn,
+            db_path=db_path,
+            backend=backend,
+            dimensions=dimensions,
+            model_name=model_name,
         )
         if not built:
             return []
@@ -303,8 +317,11 @@ def query_faiss_index(
     current_fp = get_index_fingerprint(conn)
     if meta.get("index_fingerprint") != current_fp:
         rebuilt = build_faiss_index(
-            conn=conn, db_path=db_path, backend=backend,
-            dimensions=dimensions, model_name=model_name,
+            conn=conn,
+            db_path=db_path,
+            backend=backend,
+            dimensions=dimensions,
+            model_name=model_name,
         )
         if not rebuilt:
             return []
@@ -322,7 +339,7 @@ def query_faiss_index(
     scores, indices = index.search(qvec, k)
 
     results: list[tuple[int, float]] = []
-    for idx_pos, score in zip(indices[0], scores[0]):
+    for idx_pos, score in zip(indices[0], scores[0], strict=False):
         idx_pos = int(idx_pos)
         if idx_pos < 0 or idx_pos >= len(id_map):
             continue

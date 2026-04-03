@@ -3,18 +3,18 @@ from __future__ import annotations
 import os
 import re
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from .config import (
+    _FUNCTION_CALL_PATTERN,
+    _IMPORT_PATTERNS,
     CODE_EXTENSIONS,
     IGNORED_FILENAMES,
-    MIN_CHUNK_WORDS,
-    MAX_CHUNK_WORDS,
     MAX_CHUNK_TOKEN_ESTIMATE,
+    MAX_CHUNK_WORDS,
+    MIN_CHUNK_WORDS,
     TEXT_EXTENSIONS,
-    _IMPORT_PATTERNS,
-    _FUNCTION_CALL_PATTERN,
 )
 
 IGNORED_DIRS = {
@@ -42,9 +42,7 @@ NOISE_PATTERNS = [
 ]
 
 _CODE_BOUNDARY_PATTERNS: dict[str, re.Pattern[str]] = {
-    ".py": re.compile(
-        r"^(?:class\s+\w|def\s+\w|async\s+def\s+\w|@\w+)", re.MULTILINE
-    ),
+    ".py": re.compile(r"^(?:class\s+\w|def\s+\w|async\s+def\s+\w|@\w+)", re.MULTILINE),
     ".js": re.compile(
         r"^(?:(?:export\s+)?(?:(?:async\s+)?function\s+\w|class\s+\w|const\s+\w+\s*=\s*(?:async\s+)?\(|module\.exports))",
         re.MULTILINE,
@@ -72,9 +70,7 @@ _CODE_BOUNDARY_PATTERNS: dict[str, re.Pattern[str]] = {
     ".rs": re.compile(
         r"^(?:(?:pub\s+)?(?:fn\s+|struct\s+|enum\s+|impl\s+|trait\s+|mod\s+))", re.MULTILINE
     ),
-    ".c": re.compile(
-        r"^(?:\w[\w\s\*]+\s+\w+\s*\(|typedef\s+|struct\s+\w+)", re.MULTILINE
-    ),
+    ".c": re.compile(r"^(?:\w[\w\s\*]+\s+\w+\s*\(|typedef\s+|struct\s+\w+)", re.MULTILINE),
     ".h": re.compile(
         r"^(?:\w[\w\s\*]+\s+\w+\s*\(|typedef\s+|struct\s+\w+|#define\s+\w+)", re.MULTILINE
     ),
@@ -112,11 +108,41 @@ _TREE_SITTER_LANGUAGES: dict[str, tuple[str, str]] = {
 
 # AST node types that represent top-level semantic boundaries
 _AST_BOUNDARY_NODE_TYPES: dict[str, set[str]] = {
-    "python": {"function_definition", "async_function_definition", "class_definition", "decorated_definition"},
-    "javascript": {"function_declaration", "class_declaration", "method_definition", "arrow_function", "export_statement"},
-    "typescript": {"function_declaration", "class_declaration", "method_definition", "interface_declaration", "type_alias_declaration", "export_statement"},
-    "tsx": {"function_declaration", "class_declaration", "method_definition", "interface_declaration", "type_alias_declaration", "export_statement"},
-    "java": {"class_declaration", "interface_declaration", "method_declaration", "constructor_declaration"},
+    "python": {
+        "function_definition",
+        "async_function_definition",
+        "class_definition",
+        "decorated_definition",
+    },
+    "javascript": {
+        "function_declaration",
+        "class_declaration",
+        "method_definition",
+        "arrow_function",
+        "export_statement",
+    },
+    "typescript": {
+        "function_declaration",
+        "class_declaration",
+        "method_definition",
+        "interface_declaration",
+        "type_alias_declaration",
+        "export_statement",
+    },
+    "tsx": {
+        "function_declaration",
+        "class_declaration",
+        "method_definition",
+        "interface_declaration",
+        "type_alias_declaration",
+        "export_statement",
+    },
+    "java": {
+        "class_declaration",
+        "interface_declaration",
+        "method_declaration",
+        "constructor_declaration",
+    },
     "go": {"function_declaration", "method_declaration", "type_declaration"},
     "rust": {"function_item", "impl_item", "struct_item", "enum_item", "trait_item", "mod_item"},
     "c": {"function_definition", "struct_specifier", "type_definition"},
@@ -345,7 +371,9 @@ def should_skip_file(path: Path) -> bool:
     # Skip oversized files
     try:
         if path.stat().st_size > MAX_FILE_SIZE_BYTES:
-            print(f"[skip] File too large ({path.stat().st_size} bytes): {path.name}", file=sys.stderr)
+            print(
+                f"[skip] File too large ({path.stat().st_size} bytes): {path.name}", file=sys.stderr
+            )
             return True
     except OSError:
         return True
@@ -403,7 +431,8 @@ def _is_tree_sitter_available() -> bool:
     if _TREE_SITTER_AVAILABLE is not None:
         return _TREE_SITTER_AVAILABLE
     try:
-        import tree_sitter  # type: ignore
+        import tree_sitter  # type: ignore  # noqa: F401
+
         _TREE_SITTER_AVAILABLE = True
     except ImportError:
         _TREE_SITTER_AVAILABLE = False
@@ -420,8 +449,10 @@ def _get_tree_sitter_parser(ext: str) -> object | None:
     lang_name, grammar_module = _TREE_SITTER_LANGUAGES[ext]
 
     try:
-        import tree_sitter  # type: ignore
         import importlib
+
+        import tree_sitter  # type: ignore
+
         grammar = importlib.import_module(grammar_module)
 
         # Handle typescript/tsx which have multiple languages in one package
@@ -541,10 +572,40 @@ def extract_function_calls(text: str) -> list[str]:
     """Extract function/method call names from code text."""
     # Filter out common keywords and built-ins
     keywords = {
-        "if", "else", "for", "while", "return", "function", "def", "class",
-        "import", "from", "try", "except", "catch", "finally", "with", "as",
-        "print", "len", "str", "int", "float", "list", "dict", "set", "tuple",
-        "True", "False", "None", "self", "this", "new", "const", "let", "var",
+        "if",
+        "else",
+        "for",
+        "while",
+        "return",
+        "function",
+        "def",
+        "class",
+        "import",
+        "from",
+        "try",
+        "except",
+        "catch",
+        "finally",
+        "with",
+        "as",
+        "print",
+        "len",
+        "str",
+        "int",
+        "float",
+        "list",
+        "dict",
+        "set",
+        "tuple",
+        "True",
+        "False",
+        "None",
+        "self",
+        "this",
+        "new",
+        "const",
+        "let",
+        "var",
     }
     calls = []
     for match in _FUNCTION_CALL_PATTERN.finditer(text):
@@ -554,7 +615,9 @@ def extract_function_calls(text: str) -> list[str]:
     return list(set(calls))  # Deduplicate
 
 
-def resolve_import_to_file(import_path: str, source_file: str, indexed_files: set[str]) -> str | None:
+def resolve_import_to_file(
+    import_path: str, source_file: str, indexed_files: set[str]
+) -> str | None:
     """Attempt to resolve an import path to an actual indexed file."""
     source_dir = Path(source_file).parent
     dotted_import_as_path = import_path.replace(".", "/")

@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from token_reducer.chunker import (
     char_ngrams,
     chunk_code,
@@ -261,8 +260,7 @@ class TestChunkCode:
     def test_large_python_produces_multiple_chunks(self) -> None:
         # Build code that definitely exceeds MIN_CHUNK_WORDS*2 to force multiple chunks
         funcs = "\n\n".join(
-            f"def func_{i}():\n    " + "x = 1\n    " * 20 + "return x"
-            for i in range(20)
+            f"def func_{i}():\n    " + "x = 1\n    " * 20 + "return x" for i in range(20)
         )
         chunks = chunk_code(funcs, "big.py", chunk_size_words=MIN_CHUNK_WORDS)
         assert len(chunks) >= 2

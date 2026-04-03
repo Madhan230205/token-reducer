@@ -4,7 +4,6 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-
 from token_reducer.db import (
     cleanup_query_cache,
     connect_db,
@@ -35,17 +34,23 @@ def db(tmp_path: Path) -> sqlite3.Connection:
 # connect_db
 # ---------------------------------------------------------------------------
 
+
 class TestConnectDb:
     def test_creates_required_tables(self, tmp_path: Path) -> None:
         conn = connect_db(tmp_path / "test.db")
         tables = {
             row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
-        assert {"documents", "chunks", "chunk_embeddings", "query_embeddings",
-                "query_cache", "file_dependencies", "symbol_index"} <= tables
+        assert {
+            "documents",
+            "chunks",
+            "chunk_embeddings",
+            "query_embeddings",
+            "query_cache",
+            "file_dependencies",
+            "symbol_index",
+        } <= tables
         conn.close()
 
     def test_idempotent(self, tmp_path: Path) -> None:
@@ -72,6 +77,7 @@ class TestConnectDb:
 # get_index_fingerprint
 # ---------------------------------------------------------------------------
 
+
 class TestGetIndexFingerprint:
     def test_returns_non_empty_string(self, db: sqlite3.Connection) -> None:
         fp = get_index_fingerprint(db)
@@ -95,6 +101,7 @@ class TestGetIndexFingerprint:
 # query cache
 # ---------------------------------------------------------------------------
 
+
 class TestQueryCache:
     def test_miss_returns_none(self, db: sqlite3.Connection) -> None:
         assert get_cached_query_result(db, "missing", now_epoch=1000) is None
@@ -110,8 +117,8 @@ class TestQueryCache:
         assert get_cached_query_result(db, "k2", now_epoch=1031) is None
 
     def test_cleanup_removes_only_expired(self, db: sqlite3.Connection) -> None:
-        set_cached_query_result(db, "old", {}, now_epoch=100, ttl_seconds=30)   # expires 130
-        set_cached_query_result(db, "new", {}, now_epoch=100, ttl_seconds=1000) # expires 1100
+        set_cached_query_result(db, "old", {}, now_epoch=100, ttl_seconds=30)  # expires 130
+        set_cached_query_result(db, "new", {}, now_epoch=100, ttl_seconds=1000)  # expires 1100
         cleanup_query_cache(db, now_epoch=200)
         assert get_cached_query_result(db, "old", now_epoch=200) is None
         assert get_cached_query_result(db, "new", now_epoch=200) is not None
@@ -126,6 +133,7 @@ class TestQueryCache:
 # ---------------------------------------------------------------------------
 # query embedding cache
 # ---------------------------------------------------------------------------
+
 
 class TestQueryEmbeddingCache:
     def test_miss_returns_none(self, db: sqlite3.Connection) -> None:
@@ -150,6 +158,7 @@ class TestQueryEmbeddingCache:
 # ---------------------------------------------------------------------------
 # session memory
 # ---------------------------------------------------------------------------
+
 
 class TestSessionMemory:
     def test_session_memory_path_naming(self, tmp_path: Path) -> None:
@@ -200,6 +209,7 @@ class TestSessionMemory:
 # ---------------------------------------------------------------------------
 # extract_symbols_from_chunk
 # ---------------------------------------------------------------------------
+
 
 class TestExtractSymbols:
     def test_python_function(self) -> None:
@@ -252,6 +262,7 @@ class TestExtractSymbols:
 # ---------------------------------------------------------------------------
 # upsert_document
 # ---------------------------------------------------------------------------
+
 
 class TestUpsertDocument:
     def test_inserts_document_and_chunks(self, tmp_path: Path) -> None:
@@ -311,6 +322,7 @@ class TestUpsertDocument:
 # ---------------------------------------------------------------------------
 # index_file_dependencies
 # ---------------------------------------------------------------------------
+
 
 class TestIndexFileDependencies:
     def test_indexes_python_imports(self, db: sqlite3.Connection) -> None:

@@ -3,18 +3,15 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from .chunker import estimate_tokens, is_code_file, tokenize
 from .config import get_weight
 from .models import (
     Candidate,
     CandidateSummary,
-    CacheInfo,
     ContextPacket,
     RetrievalInfo,
-    SessionMemory,
     TokenMetrics,
 )
-from .chunker import estimate_tokens, is_code_file, tokenize
-from .embeddings import embed_text
 
 
 def split_sentences(text: str) -> list[str]:
@@ -22,7 +19,9 @@ def split_sentences(text: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
-def textrank_score_sentences(sentences: list[str], damping: float = 0.85, iterations: int = 30) -> list[tuple[float, str]]:
+def textrank_score_sentences(
+    sentences: list[str], damping: float = 0.85, iterations: int = 30
+) -> list[tuple[float, str]]:
     """Score sentences using TextRank algorithm for extractive summarization.
 
     TextRank builds a graph where sentences are nodes and edges are weighted
@@ -72,7 +71,7 @@ def textrank_score_sentences(sentences: list[str], damping: float = 0.85, iterat
     if max_score > 0:
         scores = [s / max_score for s in scores]
 
-    return list(zip(scores, sentences))
+    return list(zip(scores, sentences, strict=False))
 
 
 def cluster_chunks_semantically(
@@ -191,7 +190,7 @@ def merge_adjacent_candidates(candidates: list[Candidate]) -> list[Candidate]:
         by_source.setdefault(c.source, []).append(c)
 
     merged: list[Candidate] = []
-    for source, group in by_source.items():
+    for _source, group in by_source.items():
         group.sort(key=lambda c: c.chunk_index)
         run: list[Candidate] = [group[0]]
 
@@ -268,7 +267,7 @@ def compress_candidates(
             snippets = extract_code_signatures(candidate.text)
             if not snippets:
                 # Fallback: use first N lines preserving code structure
-                code_lines = [l for l in candidate.text.splitlines() if l.strip()]
+                code_lines = [line for line in candidate.text.splitlines() if line.strip()]
                 snippets = code_lines[:5] if code_lines else []
             if not snippets:
                 continue
@@ -293,7 +292,11 @@ def compress_candidates(
                 query_signal = overlap / float(len(query_terms)) if query_terms else 0.0
                 length_bonus = min(1.0, len(sentence.split()) / length_normalizer)
                 # Combine TextRank centrality with query relevance
-                combined_score = (textrank_w * tr_score) + (query_relevance_w * query_signal) + (length_bonus_w * length_bonus)
+                combined_score = (
+                    (textrank_w * tr_score)
+                    + (query_relevance_w * query_signal)
+                    + (length_bonus_w * length_bonus)
+                )
                 scored_sentences.append((combined_score, sentence))
 
             scored_sentences.sort(key=lambda pair: pair[0], reverse=True)
@@ -325,7 +328,9 @@ def compress_candidates(
     for candidate in candidates[:3]:
         snippet = " ".join(candidate.text.split()[:35]).strip()
         if snippet:
-            fallback.append(f"{snippet}... [{Path(candidate.source).name}#chunk-{candidate.chunk_index}]")
+            fallback.append(
+                f"{snippet}... [{Path(candidate.source).name}#chunk-{candidate.chunk_index}]"
+            )
     return fallback
 
 

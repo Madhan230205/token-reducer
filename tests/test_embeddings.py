@@ -9,10 +9,10 @@ from token_reducer.embeddings import (
     resolve_embedding_backend,
 )
 
-
 # ---------------------------------------------------------------------------
 # embed_text_hash
 # ---------------------------------------------------------------------------
+
 
 class TestEmbedTextHash:
     def test_returns_correct_length(self) -> None:
@@ -54,6 +54,7 @@ class TestEmbedTextHash:
 # cosine_similarity
 # ---------------------------------------------------------------------------
 
+
 class TestCosineSimilarity:
     def test_self_similarity_is_one(self) -> None:
         vec = embed_text_hash("test vector", dimensions=64)
@@ -87,6 +88,7 @@ class TestCosineSimilarity:
 # resolve_embedding_backend
 # ---------------------------------------------------------------------------
 
+
 class TestResolveEmbeddingBackend:
     def test_hash_returns_hash_and_none_model(self) -> None:
         backend, model = resolve_embedding_backend("hash", "any-model")
@@ -115,6 +117,7 @@ class TestResolveEmbeddingBackend:
 # ---------------------------------------------------------------------------
 # embed_text (dispatcher)
 # ---------------------------------------------------------------------------
+
 
 class TestEmbedText:
     def test_hash_backend_returns_correct_shape(self) -> None:

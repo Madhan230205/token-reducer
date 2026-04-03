@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from hashlib import blake2b
 from pathlib import Path
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -182,11 +181,11 @@ class FileDependency(BaseModel):
 
 
 def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def utc_now_epoch() -> int:
-    return int(datetime.now(timezone.utc).timestamp())
+    return int(datetime.now(UTC).timestamp())
 
 
 def safe_slug(value: str) -> str:

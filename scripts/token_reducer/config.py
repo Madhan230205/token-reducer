@@ -79,6 +79,7 @@ def configure_hash_skip_vector(skip: bool) -> None:
 def _camel_to_snake(name: str) -> str:
     """Convert camelCase to snake_case."""
     import re
+
     s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
@@ -130,8 +131,24 @@ TEXT_EXTENSIONS = {
 }
 
 CODE_EXTENSIONS = {
-    ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".kt", ".go", ".rs",
-    ".c", ".h", ".cpp", ".cs", ".php", ".rb", ".swift", ".sh", ".ps1",
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".java",
+    ".kt",
+    ".go",
+    ".rs",
+    ".c",
+    ".h",
+    ".cpp",
+    ".cs",
+    ".php",
+    ".rb",
+    ".swift",
+    ".sh",
+    ".ps1",
 }
 
 IGNORED_FILENAMES = {
@@ -150,20 +167,22 @@ IGNORED_FILENAMES = {
 
 # Import graph extraction patterns
 _IMPORT_PATTERNS: dict[str, re.Pattern[str]] = {
-    ".py": re.compile(
-        r"^(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))", re.MULTILINE
-    ),
+    ".py": re.compile(r"^(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))", re.MULTILINE),
     ".js": re.compile(
-        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))", re.MULTILINE
+        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))",
+        re.MULTILINE,
     ),
     ".ts": re.compile(
-        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))", re.MULTILINE
+        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))",
+        re.MULTILINE,
     ),
     ".tsx": re.compile(
-        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))", re.MULTILINE
+        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))",
+        re.MULTILINE,
     ),
     ".jsx": re.compile(
-        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))", re.MULTILINE
+        r"(?:import\s+.*?from\s+['\"]([^'\"]+)['\"]|require\s*\(\s*['\"]([^'\"]+)['\"]\s*\))",
+        re.MULTILINE,
     ),
     ".go": re.compile(r'import\s+(?:\(\s*)?["\']([^"\']+)["\']', re.MULTILINE),
     ".rs": re.compile(r"(?:use\s+([\w:]+)|mod\s+(\w+))", re.MULTILINE),
@@ -171,7 +190,9 @@ _IMPORT_PATTERNS: dict[str, re.Pattern[str]] = {
     ".c": re.compile(r'#include\s*[<"]([^>"]+)[>"]', re.MULTILINE),
     ".h": re.compile(r'#include\s*[<"]([^>"]+)[>"]', re.MULTILINE),
     ".cpp": re.compile(r'#include\s*[<"]([^>"]+)[>"]', re.MULTILINE),
-    ".rb": re.compile(r"(?:require\s+['\"]([^'\"]+)['\"]|require_relative\s+['\"]([^'\"]+)['\"])", re.MULTILINE),
+    ".rb": re.compile(
+        r"(?:require\s+['\"]([^'\"]+)['\"]|require_relative\s+['\"]([^'\"]+)['\"])", re.MULTILINE
+    ),
 }
 
 # Function call extraction pattern (language-agnostic)

@@ -4,25 +4,24 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .config import MAX_QUERY_WORDS, MAX_QUERY_LINES, DEFAULT_RELEVANCE_FLOOR
-from .models import utc_now_epoch, hash_text, ContextPacket, SessionMemory, CacheInfo
+from .compressor import build_packet, compress_candidates
+from .config import DEFAULT_RELEVANCE_FLOOR, MAX_QUERY_LINES, MAX_QUERY_WORDS
 from .db import (
     cleanup_query_cache,
-    get_index_fingerprint,
     get_cached_query_result,
-    set_cached_query_result,
-    session_memory_path,
-    update_session_memory,
+    get_index_fingerprint,
     get_recent_session_queries,
+    session_memory_path,
+    set_cached_query_result,
+    update_session_memory,
 )
-from .ann import build_hnsw_index, infer_embedding_dimensions
+from .models import CacheInfo, ContextPacket, SessionMemory, hash_text, utc_now_epoch
 from .retriever import (
-    infer_retrieval_tier,
     fts_retrieve,
-    vector_retrieve,
+    infer_retrieval_tier,
     rerank_candidates,
+    vector_retrieve,
 )
-from .compressor import compress_candidates, build_packet
 
 
 def validate_query_input(query: str) -> tuple[bool, str | None]:
@@ -84,20 +83,28 @@ def run_retrieval_pipeline(
         sort_keys=True,
     )
     query_cache_key = hash_text(cache_key_material)
-    cached_result = get_cached_query_result(conn=conn, cache_key=query_cache_key, now_epoch=now_epoch)
+    cached_result = get_cached_query_result(
+        conn=conn, cache_key=query_cache_key, now_epoch=now_epoch
+    )
     if cached_result is not None:
         memory_path = session_memory_path(db_path)
         updated_memory = update_session_memory(
             memory_path=memory_path,
             session_id=session_id,
             query=query,
-            selected_sources=[str(item.get("source")) for item in cached_result.get("candidates", []) if isinstance(item, dict)],
+            selected_sources=[
+                str(item.get("source"))
+                for item in cached_result.get("candidates", [])
+                if isinstance(item, dict)
+            ],
         )
         # Reconstruct ContextPacket from cached dict
         cached_packet = ContextPacket.model_validate(cached_result)
         cached_packet.session_memory = SessionMemory(
             session_id=session_id,
-            recent_queries=get_recent_session_queries(updated_memory, session_id=session_id, limit=4),
+            recent_queries=get_recent_session_queries(
+                updated_memory, session_id=session_id, limit=4
+            ),
         )
         if cached_packet.cache is None:
             cached_packet.cache = CacheInfo()
@@ -135,14 +142,16 @@ def run_retrieval_pipeline(
         vector_retrieval_path = "skipped_hash_backend"
 
     if use_vector:
-        vector_hits, vector_backend_used, vector_model_used, vector_retrieval_path = vector_retrieve(
-            conn=conn,
-            db_path=db_path,
-            query=query,
-            limit=vector_k,
-            dimensions=dimensions,
-            embedding_backend=embedding_backend,
-            embedding_model=embedding_model,
+        vector_hits, vector_backend_used, vector_model_used, vector_retrieval_path = (
+            vector_retrieve(
+                conn=conn,
+                db_path=db_path,
+                query=query,
+                limit=vector_k,
+                dimensions=dimensions,
+                embedding_backend=embedding_backend,
+                embedding_model=embedding_model,
+            )
         )
 
     selected, candidate_pool = rerank_candidates(

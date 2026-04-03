@@ -1,32 +1,32 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import sqlite3
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
-from .models import (
-    Candidate,
-    utc_now_iso,
-    utc_now_epoch,
-    hash_text,
-    embedding_cache_key,
-)
 from .chunker import (
-    clean_text,
-    chunk_text,
     chunk_code,
+    chunk_text,
+    clean_text,
+    estimate_tokens,
+    extract_function_calls,
+    extract_imports,
     is_code_file,
     is_minified,
     read_text_file,
-    estimate_tokens,
-    extract_imports,
-    extract_function_calls,
     resolve_import_to_file,
 )
 from .embeddings import embed_text
+from .models import (
+    Candidate,
+    hash_text,
+    utc_now_epoch,
+    utc_now_iso,
+)
 
 
 def connect_db(db_path: Path) -> sqlite3.Connection:
@@ -143,10 +143,8 @@ def connect_db(db_path: Path) -> sqlite3.Connection:
             "ALTER TABLE documents ADD COLUMN file_mtime REAL",
             "ALTER TABLE documents ADD COLUMN file_hash TEXT",
         ):
-            try:
+            with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute(statement)
-            except sqlite3.OperationalError:
-                pass
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_backend_dims ON chunk_embeddings(backend, dimensions);"
@@ -178,7 +176,9 @@ def cleanup_query_cache(conn: sqlite3.Connection, now_epoch: int) -> None:
     conn.commit()
 
 
-def get_cached_query_result(conn: sqlite3.Connection, cache_key: str, now_epoch: int) -> dict | None:
+def get_cached_query_result(
+    conn: sqlite3.Connection, cache_key: str, now_epoch: int
+) -> dict | None:
     row = conn.execute(
         """
         SELECT cache_payload_json, expires_at_epoch
@@ -348,7 +348,9 @@ def upsert_document(
 
     if existing:
         document_id = int(existing["id"])
-        old_chunks = conn.execute("SELECT id FROM chunks WHERE document_id = ?", (document_id,)).fetchall()
+        old_chunks = conn.execute(
+            "SELECT id FROM chunks WHERE document_id = ?", (document_id,)
+        ).fetchall()
         for row in old_chunks:
             cid = int(row["id"])
             conn.execute("DELETE FROM chunk_embeddings WHERE chunk_id = ?", (cid,))
@@ -516,63 +518,89 @@ def extract_symbols_from_chunk(text: str, source: str) -> list[dict]:
     if ext == ".py":
         # Python: def func_name(...) or class ClassName
         for match in re.finditer(r"^(?:async\s+)?def\s+(\w+)\s*\(([^)]*)\)", text, re.MULTILINE):
-            symbols.append({
-                "name": match.group(1),
-                "type": "function",
-                "signature": f"def {match.group(1)}({match.group(2)})",
-            })
+            symbols.append(
+                {
+                    "name": match.group(1),
+                    "type": "function",
+                    "signature": f"def {match.group(1)}({match.group(2)})",
+                }
+            )
         for match in re.finditer(r"^class\s+(\w+)(?:\(([^)]*)\))?:", text, re.MULTILINE):
-            symbols.append({
-                "name": match.group(1),
-                "type": "class",
-                "signature": f"class {match.group(1)}",
-            })
+            symbols.append(
+                {
+                    "name": match.group(1),
+                    "type": "class",
+                    "signature": f"class {match.group(1)}",
+                }
+            )
     elif ext in {".js", ".ts", ".tsx", ".jsx"}:
         # JS/TS: function name() or const name = () =>
-        for match in re.finditer(r"(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)", text, re.MULTILINE):
-            symbols.append({
-                "name": match.group(1),
-                "type": "function",
-                "signature": f"function {match.group(1)}({match.group(2)})",
-            })
-        for match in re.finditer(r"(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>", text, re.MULTILINE):
-            symbols.append({
-                "name": match.group(1),
-                "type": "function",
-                "signature": f"const {match.group(1)} = () =>",
-            })
+        for match in re.finditer(
+            r"(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)", text, re.MULTILINE
+        ):
+            symbols.append(
+                {
+                    "name": match.group(1),
+                    "type": "function",
+                    "signature": f"function {match.group(1)}({match.group(2)})",
+                }
+            )
+        for match in re.finditer(
+            r"(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>", text, re.MULTILINE
+        ):
+            symbols.append(
+                {
+                    "name": match.group(1),
+                    "type": "function",
+                    "signature": f"const {match.group(1)} = () =>",
+                }
+            )
         for match in re.finditer(r"class\s+(\w+)(?:\s+extends\s+\w+)?", text, re.MULTILINE):
-            symbols.append({
-                "name": match.group(1),
-                "type": "class",
-                "signature": f"class {match.group(1)}",
-            })
+            symbols.append(
+                {
+                    "name": match.group(1),
+                    "type": "class",
+                    "signature": f"class {match.group(1)}",
+                }
+            )
     elif ext == ".go":
-        for match in re.finditer(r"func\s+(?:\([^)]+\)\s+)?(\w+)\s*\(([^)]*)\)", text, re.MULTILINE):
-            symbols.append({
-                "name": match.group(1),
-                "type": "function",
-                "signature": f"func {match.group(1)}({match.group(2)})",
-            })
+        for match in re.finditer(
+            r"func\s+(?:\([^)]+\)\s+)?(\w+)\s*\(([^)]*)\)", text, re.MULTILINE
+        ):
+            symbols.append(
+                {
+                    "name": match.group(1),
+                    "type": "function",
+                    "signature": f"func {match.group(1)}({match.group(2)})",
+                }
+            )
         for match in re.finditer(r"type\s+(\w+)\s+struct", text, re.MULTILINE):
-            symbols.append({
-                "name": match.group(1),
-                "type": "struct",
-                "signature": f"type {match.group(1)} struct",
-            })
+            symbols.append(
+                {
+                    "name": match.group(1),
+                    "type": "struct",
+                    "signature": f"type {match.group(1)} struct",
+                }
+            )
     elif ext == ".rs":
-        for match in re.finditer(r"(?:pub\s+)?fn\s+(\w+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)", text, re.MULTILINE):
-            symbols.append({
-                "name": match.group(1),
-                "type": "function",
-                "signature": f"fn {match.group(1)}({match.group(2)})",
-            })
+        for match in re.finditer(
+            r"(?:pub\s+)?fn\s+(\w+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)", text, re.MULTILINE
+        ):
+            symbols.append(
+                {
+                    "name": match.group(1),
+                    "type": "function",
+                    "signature": f"fn {match.group(1)}({match.group(2)})",
+                }
+            )
         for match in re.finditer(r"(?:pub\s+)?struct\s+(\w+)", text, re.MULTILINE):
-            symbols.append({
-                "name": match.group(1),
-                "type": "struct",
-                "signature": f"struct {match.group(1)}",
-            })
+            symbols.append(
+                {
+                    "name": match.group(1),
+                    "type": "struct",
+                    "signature": f"struct {match.group(1)}",
+                }
+            )
 
     return symbols
 
@@ -589,7 +617,9 @@ def get_imported_files(conn: sqlite3.Connection, source_file: str) -> list[str]:
     return [str(row[0]) for row in rows]
 
 
-def lookup_symbol_definition(conn: sqlite3.Connection, symbol_name: str, limit: int = 3) -> list[dict]:
+def lookup_symbol_definition(
+    conn: sqlite3.Connection, symbol_name: str, limit: int = 3
+) -> list[dict]:
     """Look up symbol definitions by name (for 2-hop expansion)."""
     rows = conn.execute(
         """
@@ -638,11 +668,13 @@ def expand_symbols_two_hop(
             definitions = lookup_symbol_definition(conn, call_name, limit=1)
             if definitions:
                 seen_symbols.add(call_name)
-                referenced_symbols.append({
-                    "symbol": call_name,
-                    "from_chunk": candidate.source,
-                    **definitions[0],
-                })
+                referenced_symbols.append(
+                    {
+                        "symbol": call_name,
+                        "from_chunk": candidate.source,
+                        **definitions[0],
+                    }
+                )
 
     return referenced_symbols
 
@@ -710,9 +742,7 @@ def get_index_stats(conn: sqlite3.Connection) -> dict:
     dep_count = conn.execute("SELECT COUNT(*) FROM file_dependencies").fetchone()[0]
 
     # Get oldest and newest document timestamps
-    date_row = conn.execute(
-        "SELECT MIN(created_at), MAX(updated_at) FROM documents"
-    ).fetchone()
+    date_row = conn.execute("SELECT MIN(created_at), MAX(updated_at) FROM documents").fetchone()
     oldest_doc = date_row[0] if date_row else None
     newest_doc = date_row[1] if date_row else None
 
@@ -738,9 +768,7 @@ def get_index_stats(conn: sqlite3.Connection) -> dict:
 
 def get_indexed_files(conn: sqlite3.Connection) -> dict[str, tuple[float | None, str | None]]:
     """Get all indexed files with their mtime and hash."""
-    rows = conn.execute(
-        "SELECT source, file_mtime, file_hash FROM documents"
-    ).fetchall()
+    rows = conn.execute("SELECT source, file_mtime, file_hash FROM documents").fetchall()
     return {row[0]: (row[1], row[2]) for row in rows}
 
 
@@ -787,9 +815,7 @@ def remove_documents_by_source(conn: sqlite3.Connection, sources: list[str]) -> 
 
     removed = 0
     for source in sources:
-        doc_row = conn.execute(
-            "SELECT id FROM documents WHERE source = ?", (source,)
-        ).fetchone()
+        doc_row = conn.execute("SELECT id FROM documents WHERE source = ?", (source,)).fetchone()
         if doc_row:
             doc_id = doc_row[0]
             # Get chunk IDs for cleanup
@@ -855,8 +881,7 @@ def garbage_collect(
     # Find expired cache entries
     now_epoch = utc_now_epoch()
     expired_cache = conn.execute(
-        "SELECT COUNT(*) FROM query_cache WHERE expires_at_epoch <= ?",
-        (now_epoch,)
+        "SELECT COUNT(*) FROM query_cache WHERE expires_at_epoch <= ?", (now_epoch,)
     ).fetchone()[0]
     stats["expired_cache_entries"] = expired_cache
 
@@ -900,10 +925,7 @@ def garbage_collect(
         )
 
         # Delete expired cache entries
-        conn.execute(
-            "DELETE FROM query_cache WHERE expires_at_epoch <= ?",
-            (now_epoch,)
-        )
+        conn.execute("DELETE FROM query_cache WHERE expires_at_epoch <= ?", (now_epoch,))
 
         # Delete orphaned symbols
         conn.execute(
