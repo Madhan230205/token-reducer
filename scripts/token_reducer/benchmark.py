@@ -170,6 +170,7 @@ class BenchmarkConfig:
     chunk_size: int = DEFAULT_CHUNK_SIZE
     overlap: int = DEFAULT_CHUNK_OVERLAP
     word_budget: int = DEFAULT_WORD_BUDGET
+    relevance_floor: float = DEFAULT_RELEVANCE_FLOOR
     num_iterations: int = 3  # Run each query multiple times for latency stats
 
 
@@ -291,7 +292,7 @@ def run_single_query_benchmark(
             query_cache_ttl_seconds=0,  # Disable cache for fair measurement
             dimensions=config.dimensions,
             word_budget=config.word_budget,
-            relevance_floor=DEFAULT_RELEVANCE_FLOOR,
+            relevance_floor=config.relevance_floor,
         )
         latency_ms = (time.perf_counter() - start) * 1000
         latencies.append(latency_ms)

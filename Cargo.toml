@@ -1,0 +1,11 @@
+[package]
+name = "token-reducer-core"
+version = "1.4.0"
+edition = "2021"
+
+[lib]
+name = "token_reducer_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }

@@ -20,6 +20,11 @@ CLI = [sys.executable, str(PROJECT_ROOT / "scripts" / "context_pipeline.py")]
 TIMEOUT = 120  # seconds — generous for first-run model/index build
 
 
+# Smaller corpus + hash embeddings keep CI under subprocess timeout (full repo + onnx/ml can exceed 120s).
+BENCH_INPUTS = str(PROJECT_ROOT / "scripts" / "token_reducer")
+BENCH_EXTRA = ("--embedding-backend", "hash")
+
+
 def _run(*args: str) -> subprocess.CompletedProcess:
     """Run the CLI with the given args and return the CompletedProcess."""
     cmd = CLI + list(args)
@@ -42,14 +47,18 @@ def _run(*args: str) -> subprocess.CompletedProcess:
 class TestBenchmark:
     def test_exit_code_zero(self, tmp_path: Path) -> None:
         db = str(tmp_path / "bench.db")
-        result = _run("benchmark", "--inputs", str(PROJECT_ROOT), "--db", db)
+        result = _run(
+            "benchmark", "--inputs", BENCH_INPUTS, "--db", db, *BENCH_EXTRA
+        )
         assert result.returncode == 0, (
             f"benchmark exited {result.returncode}\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         )
 
     def test_banner_on_stderr(self, tmp_path: Path) -> None:
         db = str(tmp_path / "bench.db")
-        result = _run("benchmark", "--inputs", str(PROJECT_ROOT), "--db", db)
+        result = _run(
+            "benchmark", "--inputs", BENCH_INPUTS, "--db", db, *BENCH_EXTRA
+        )
         # The human-readable summary is written to stderr via rich Console(stderr=True)
         assert "TOKEN REDUCER BENCHMARK" in result.stderr, (
             f"Expected 'TOKEN REDUCER BENCHMARK' in stderr.\nSTDERR:\n{result.stderr}"
@@ -57,21 +66,27 @@ class TestBenchmark:
 
     def test_token_savings_in_stderr(self, tmp_path: Path) -> None:
         db = str(tmp_path / "bench.db")
-        result = _run("benchmark", "--inputs", str(PROJECT_ROOT), "--db", db)
+        result = _run(
+            "benchmark", "--inputs", BENCH_INPUTS, "--db", db, *BENCH_EXTRA
+        )
         assert "Token savings:" in result.stderr, (
             f"Expected 'Token savings:' in stderr.\nSTDERR:\n{result.stderr}"
         )
 
     def test_files_indexed_positive(self, tmp_path: Path) -> None:
         db = str(tmp_path / "bench.db")
-        result = _run("benchmark", "--inputs", str(PROJECT_ROOT), "--db", db)
+        result = _run(
+            "benchmark", "--inputs", BENCH_INPUTS, "--db", db, *BENCH_EXTRA
+        )
         assert "Files indexed:" in result.stderr, (
             f"Expected 'Files indexed:' in stderr.\nSTDERR:\n{result.stderr}"
         )
 
     def test_stdout_is_valid_json(self, tmp_path: Path) -> None:
         db = str(tmp_path / "bench.db")
-        result = _run("benchmark", "--inputs", str(PROJECT_ROOT), "--db", db)
+        result = _run(
+            "benchmark", "--inputs", BENCH_INPUTS, "--db", db, *BENCH_EXTRA
+        )
         assert result.returncode == 0
         try:
             report = json.loads(result.stdout)
@@ -96,7 +111,16 @@ class TestBenchmark:
 class TestRunHuman:
     def test_exit_code_zero(self, tmp_path: Path) -> None:
         db = str(tmp_path / "run.db")
-        result = _run("run", "--inputs", str(PROJECT_ROOT), "--query", "error handling", "--db", db)
+        result = _run(
+            "run",
+            "--inputs",
+            BENCH_INPUTS,
+            "--query",
+            "error handling",
+            "--db",
+            db,
+            *BENCH_EXTRA,
+        )
         assert result.returncode == 0, (
             f"run exited {result.returncode}\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         )
@@ -104,7 +128,16 @@ class TestRunHuman:
     def test_output_is_not_json(self, tmp_path: Path) -> None:
         """Without --json flag the output should be the human-readable packet, not JSON."""
         db = str(tmp_path / "run.db")
-        result = _run("run", "--inputs", str(PROJECT_ROOT), "--query", "error handling", "--db", db)
+        result = _run(
+            "run",
+            "--inputs",
+            BENCH_INPUTS,
+            "--query",
+            "error handling",
+            "--db",
+            db,
+            *BENCH_EXTRA,
+        )
         assert result.returncode == 0
         # Human output should NOT be parseable as a dict with 'query' key at top level
         try:
@@ -125,7 +158,15 @@ class TestRunJson:
     def test_exit_code_zero(self, tmp_path: Path) -> None:
         db = str(tmp_path / "run_json.db")
         result = _run(
-            "run", "--inputs", str(PROJECT_ROOT), "--query", "error handling", "--db", db, "--json"
+            "run",
+            "--inputs",
+            BENCH_INPUTS,
+            "--query",
+            "error handling",
+            "--db",
+            db,
+            "--json",
+            *BENCH_EXTRA,
         )
         assert result.returncode == 0, (
             f"run --json exited {result.returncode}\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
@@ -134,7 +175,15 @@ class TestRunJson:
     def test_output_is_valid_json(self, tmp_path: Path) -> None:
         db = str(tmp_path / "run_json.db")
         result = _run(
-            "run", "--inputs", str(PROJECT_ROOT), "--query", "error handling", "--db", db, "--json"
+            "run",
+            "--inputs",
+            BENCH_INPUTS,
+            "--query",
+            "error handling",
+            "--db",
+            db,
+            "--json",
+            *BENCH_EXTRA,
         )
         assert result.returncode == 0
         try:
@@ -146,7 +195,15 @@ class TestRunJson:
     def test_required_keys_present(self, tmp_path: Path) -> None:
         db = str(tmp_path / "run_json.db")
         result = _run(
-            "run", "--inputs", str(PROJECT_ROOT), "--query", "error handling", "--db", db, "--json"
+            "run",
+            "--inputs",
+            BENCH_INPUTS,
+            "--query",
+            "error handling",
+            "--db",
+            db,
+            "--json",
+            *BENCH_EXTRA,
         )
         assert result.returncode == 0
         data = json.loads(result.stdout)
@@ -156,7 +213,15 @@ class TestRunJson:
     def test_selected_chunks_positive(self, tmp_path: Path) -> None:
         db = str(tmp_path / "run_json.db")
         result = _run(
-            "run", "--inputs", str(PROJECT_ROOT), "--query", "error handling", "--db", db, "--json"
+            "run",
+            "--inputs",
+            BENCH_INPUTS,
+            "--query",
+            "error handling",
+            "--db",
+            db,
+            "--json",
+            *BENCH_EXTRA,
         )
         assert result.returncode == 0
         data = json.loads(result.stdout)
@@ -167,7 +232,17 @@ class TestRunJson:
     def test_query_echoed_in_output(self, tmp_path: Path) -> None:
         db = str(tmp_path / "run_json.db")
         query = "error handling"
-        result = _run("run", "--inputs", str(PROJECT_ROOT), "--query", query, "--db", db, "--json")
+        result = _run(
+            "run",
+            "--inputs",
+            BENCH_INPUTS,
+            "--query",
+            query,
+            "--db",
+            db,
+            "--json",
+            *BENCH_EXTRA,
+        )
         assert result.returncode == 0
         data = json.loads(result.stdout)
         assert data["query"] == query
@@ -181,14 +256,14 @@ class TestRunJson:
 class TestIndex:
     def test_exit_code_zero(self, tmp_path: Path) -> None:
         db = str(tmp_path / "index.db")
-        result = _run("index", "--inputs", str(PROJECT_ROOT), "--db", db)
+        result = _run("index", "--inputs", BENCH_INPUTS, "--db", db, *BENCH_EXTRA)
         assert result.returncode == 0, (
             f"index exited {result.returncode}\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         )
 
     def test_stdout_json_files_indexed(self, tmp_path: Path) -> None:
         db = str(tmp_path / "index.db")
-        result = _run("index", "--inputs", str(PROJECT_ROOT), "--db", db)
+        result = _run("index", "--inputs", BENCH_INPUTS, "--db", db, *BENCH_EXTRA)
         assert result.returncode == 0
         data = json.loads(result.stdout)
         assert data["files_indexed"] > 0
@@ -224,5 +299,5 @@ class TestErrorHandling:
     def test_run_missing_query_exits_nonzero(self, tmp_path: Path) -> None:
         """Omitting --query should cause a non-zero exit."""
         db = str(tmp_path / "err.db")
-        result = _run("run", "--inputs", str(PROJECT_ROOT), "--db", db)
+        result = _run("run", "--inputs", BENCH_INPUTS, "--db", db, *BENCH_EXTRA)
         assert result.returncode != 0, "Expected non-zero exit when --query is omitted"

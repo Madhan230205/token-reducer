@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "claude-token-reducer"
@@ -64,11 +64,9 @@ dev = [
 [project.scripts]
 token-reducer = "token_reducer.cli:main"
 
-[tool.hatch.build.targets.wheel]
-packages = ["scripts/token_reducer"]
-
-[tool.hatch.build.targets.sdist]
-include = ["scripts/token_reducer", "README.md", "LICENSE", "CHANGELOG.md"]
+[tool.maturin]
+module-name = "token_reducer_core"
+features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

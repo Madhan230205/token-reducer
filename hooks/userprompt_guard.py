@@ -20,10 +20,59 @@ MAX_PROMPT_WORDS = 900
 MAX_PROMPT_LINES = 120
 HARD_TRUNCATE_WORDS = 800
 HARD_BLOCK_WORDS = 3000
-REMINDER_TURNS = {5, 8, 10, 12, 15, 20, 28, 36}
-AUTO_COMPACT_TURN = 10       # Strongly urge /compact at this turn
-AUTO_RESET_TURN = 40         # Force-inject reset recommendation at this turn
-CRITICAL_RESET_TURN = 50     # Hard warning: session is dangerously long
+REMINDER_TURNS_DEFAULT = {5, 8, 10, 12, 15, 20, 28, 36}
+AUTO_COMPACT_TURN_DEFAULT = 10
+AUTO_RESET_TURN_DEFAULT = 40
+CRITICAL_RESET_TURN_DEFAULT = 50
+
+
+def _load_guard_settings(plugin_root: str) -> dict[str, Any]:
+    path = Path(plugin_root) / "settings.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    pg = data.get("promptGuard")
+    tr = data.get("tokenReducer")
+    out: dict[str, Any] = {}
+    if isinstance(pg, dict):
+        out["promptGuard"] = pg
+    if isinstance(tr, dict):
+        out["tokenReducer"] = tr
+    return out
+
+
+def _guard_params(plugin_root: str) -> tuple[int, int, int, set[int]]:
+    blob = _load_guard_settings(plugin_root)
+    pg = blob.get("promptGuard") or {}
+    tr = blob.get("tokenReducer") or {}
+
+    auto_compact = int(pg.get("autoCompactTurn", AUTO_COMPACT_TURN_DEFAULT))
+    auto_reset = int(pg.get("autoResetTurn", AUTO_RESET_TURN_DEFAULT))
+    critical = int(pg.get("criticalResetTurn", CRITICAL_RESET_TURN_DEFAULT))
+
+    reminder: set[int] = set()
+    if isinstance(pg.get("reminderTurns"), list):
+        for x in pg["reminderTurns"]:
+            try:
+                reminder.add(int(x))
+            except (TypeError, ValueError):
+                pass
+    hist = tr.get("historyCompactReminderTurns")
+    if isinstance(hist, list):
+        for x in hist:
+            try:
+                reminder.add(int(x))
+            except (TypeError, ValueError):
+                pass
+    if not reminder:
+        reminder = set(REMINDER_TURNS_DEFAULT)
+
+    return auto_compact, auto_reset, critical, reminder
 
 
 def estimate_tokens(text: str) -> int:
@@ -106,6 +155,10 @@ def main() -> int:
     except Exception:
         pass
 
+    auto_compact_turn, auto_reset_turn, critical_reset_turn, reminder_turns = _guard_params(
+        plugin_root
+    )
+
     messages: list[str] = []
     result: dict[str, Any] = {}
 
@@ -162,28 +215,29 @@ def main() -> int:
         elif not bypass and (word_count > MAX_PROMPT_WORDS or line_count > MAX_PROMPT_LINES):
             messages.append(
                 "⚠️ Large raw prompt detected. This may bypass token reduction and burn tokens. "
-                "Prefer: keep prompt short, pass files/logs as inputs, then run /token-reducer first. "
+                "Native Read/Grep on whole files pulls raw text into the model context. "
+                "Prefer: keep the prompt short, pass paths as --inputs, then run /token-reducer (or the CLI) first. "
                 f"(approx_tokens={estimate_tokens(prompt)})"
             )
 
-    if turns >= CRITICAL_RESET_TURN and turns % 10 == 0:
+    if turns >= critical_reset_turn and turns % 10 == 0:
         messages.append(
             f"🚨 CRITICAL: Session has reached {turns} turns. Context window is likely near capacity. "
             "Token efficiency is severely degraded. START A NEW CHAT NOW to restore full token savings. "
             "Run /compact first to preserve important context, then begin a fresh session."
         )
-    elif turns >= AUTO_RESET_TURN and turns % 5 == 0:
+    elif turns >= auto_reset_turn and turns % 5 == 0:
         messages.append(
             f"🔄 AUTO-RESET RECOMMENDED: Session has reached {turns} turns. Chat history is consuming "
             "significant tokens and reducing the effectiveness of token-reducer. "
             "Strongly recommended: run /compact now, then start a fresh chat session."
         )
-    elif turns == AUTO_COMPACT_TURN:
+    elif turns == auto_compact_turn:
         messages.append(
-            f"📦 AUTO-COMPACT SUGGESTED: You've reached {AUTO_COMPACT_TURN} turns. Run /compact now to compress "
+            f"📦 AUTO-COMPACT SUGGESTED: You've reached {auto_compact_turn} turns. Run /compact now to compress "
             "conversation history and reclaim context window space. This keeps token-reducer effective."
         )
-    elif turns in REMINDER_TURNS:
+    elif turns in reminder_turns:
         messages.append(
             "🧹 Session hygiene reminder: context history is growing. Run /compact at milestones and start a fresh chat when switching major tasks."
         )

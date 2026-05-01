@@ -615,6 +615,21 @@ def extract_function_calls(text: str) -> list[str]:
     return list(set(calls))  # Deduplicate
 
 
+# ---------------------------------------------------------------------------
+# Rust acceleration — drop-in replacements when token_reducer_core is built.
+# Falls back to pure-Python above when the extension is not installed.
+# ---------------------------------------------------------------------------
+try:
+    import token_reducer_core as _rc  # type: ignore
+
+    estimate_tokens = _rc.estimate_tokens
+    tokenize = _rc.tokenize
+    char_ngrams = _rc.char_ngrams
+    chunk_text = _rc.chunk_text
+except ImportError:
+    pass
+
+
 def resolve_import_to_file(
     import_path: str, source_file: str, indexed_files: set[str]
 ) -> str | None:

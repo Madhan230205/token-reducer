@@ -77,6 +77,7 @@ def run_retrieval_pipeline(
             "embedding_model": embedding_model,
             "dimensions": dimensions,
             "word_budget": word_budget,
+            "relevance_floor": relevance_floor,
             "session_id": session_id,
             "index_fingerprint": index_fingerprint,
         },

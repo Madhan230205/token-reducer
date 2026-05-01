@@ -33,8 +33,8 @@ from .config import (
     DEFAULT_HYBRID_MODE,
     DEFAULT_MIN_FTS_HITS,
     DEFAULT_QUERY_CACHE_TTL_SECONDS,
+    DEFAULT_RELEVANCE_FLOOR,
     DEFAULT_RETRIEVAL_MODE,
-    DEFAULT_TOP_K,
     DEFAULT_VECTOR_K,
     DEFAULT_WORD_BUDGET,
 )
@@ -52,7 +52,10 @@ from .db import (
 )
 from .embeddings import resolve_embedding_backend
 from .pipeline import run_retrieval_pipeline, validate_query_input
+from .plugin_settings import get_runtime_defaults
 from .retriever import infer_retrieval_tier
+
+_RUNTIME = get_runtime_defaults()
 
 app = typer.Typer(
     name="token-reducer",
@@ -80,6 +83,13 @@ DimensionsOpt = Annotated[int, typer.Option("--dimensions")]
 SessionOpt = Annotated[str, typer.Option("--session-id")]
 CacheTtlOpt = Annotated[int, typer.Option("--query-cache-ttl")]
 WordBudgetOpt = Annotated[int, typer.Option("--word-budget")]
+RelevanceFloorOpt = Annotated[
+    float,
+    typer.Option(
+        "--relevance-floor",
+        help="Minimum final_score for a chunk to be summarized (higher drops more).",
+    ),
+]
 ModeOpt = Annotated[str, typer.Option("--mode", help="compact | deep-debug")]
 JsonOpt = Annotated[bool, typer.Option("--json", help="Output full JSON result.")]
 
@@ -93,8 +103,8 @@ JsonOpt = Annotated[bool, typer.Option("--json", help="Output full JSON result."
 def index(
     inputs: Annotated[list[str], typer.Option("--inputs", help="Files or directories to index.")],
     db: DbOpt = str(DEFAULT_DB_PATH),
-    chunk_size: ChunkSizeOpt = DEFAULT_CHUNK_SIZE,
-    overlap: OverlapOpt = DEFAULT_CHUNK_OVERLAP,
+    chunk_size: ChunkSizeOpt = _RUNTIME.chunk_size_words,
+    overlap: OverlapOpt = _RUNTIME.chunk_overlap_words,
     embedding_backend: EmbBackendOpt = DEFAULT_EMBEDDING_BACKEND,
     embedding_model: EmbModelOpt = DEFAULT_EMBEDDING_MODEL,
     dimensions: DimensionsOpt = DEFAULT_DIMENSIONS,
@@ -155,7 +165,7 @@ def index(
 def query(
     query_text: Annotated[str, typer.Option("--query", help="Question or objective.")],
     db: DbOpt = str(DEFAULT_DB_PATH),
-    top_k: TopKOpt = DEFAULT_TOP_K,
+    top_k: TopKOpt = _RUNTIME.default_top_k,
     fts_k: FtsKOpt = DEFAULT_FTS_K,
     vector_k: VectorKOpt = DEFAULT_VECTOR_K,
     min_fts_hits: MinFtsHitsOpt = DEFAULT_MIN_FTS_HITS,
@@ -166,7 +176,8 @@ def query(
     dimensions: DimensionsOpt = DEFAULT_DIMENSIONS,
     session_id: SessionOpt = "default",
     query_cache_ttl: CacheTtlOpt = DEFAULT_QUERY_CACHE_TTL_SECONDS,
-    word_budget: WordBudgetOpt = DEFAULT_WORD_BUDGET,
+    word_budget: WordBudgetOpt = _RUNTIME.compression_word_budget,
+    relevance_floor: RelevanceFloorOpt = _RUNTIME.relevance_floor,
     output_json: JsonOpt = False,
 ) -> None:
     """Retrieve and compress context from an existing index."""
@@ -198,6 +209,7 @@ def query(
             query_cache_ttl_seconds=query_cache_ttl,
             dimensions=dimensions,
             word_budget=word_budget,
+            relevance_floor=relevance_floor,
         )
 
         typer.echo(json.dumps(result.model_dump(), indent=2) if output_json else result.packet)
@@ -212,9 +224,9 @@ def run(
         list[str], typer.Option("--inputs", help="Files or directories to index first.")
     ] = [],  # noqa: B006
     db: DbOpt = str(DEFAULT_DB_PATH),
-    chunk_size: ChunkSizeOpt = DEFAULT_CHUNK_SIZE,
-    overlap: OverlapOpt = DEFAULT_CHUNK_OVERLAP,
-    top_k: TopKOpt = DEFAULT_TOP_K,
+    chunk_size: ChunkSizeOpt = _RUNTIME.chunk_size_words,
+    overlap: OverlapOpt = _RUNTIME.chunk_overlap_words,
+    top_k: TopKOpt = _RUNTIME.default_top_k,
     fts_k: FtsKOpt = DEFAULT_FTS_K,
     vector_k: VectorKOpt = DEFAULT_VECTOR_K,
     min_fts_hits: MinFtsHitsOpt = DEFAULT_MIN_FTS_HITS,
@@ -225,7 +237,8 @@ def run(
     dimensions: DimensionsOpt = DEFAULT_DIMENSIONS,
     session_id: SessionOpt = "default",
     query_cache_ttl: CacheTtlOpt = DEFAULT_QUERY_CACHE_TTL_SECONDS,
-    word_budget: WordBudgetOpt = DEFAULT_WORD_BUDGET,
+    word_budget: WordBudgetOpt = _RUNTIME.compression_word_budget,
+    relevance_floor: RelevanceFloorOpt = _RUNTIME.relevance_floor,
     output_json: JsonOpt = False,
 ) -> None:
     """End-to-end: optionally index files, then retrieve and compress."""
@@ -295,6 +308,7 @@ def run(
             query_cache_ttl_seconds=query_cache_ttl,
             dimensions=dimensions,
             word_budget=word_budget,
+            relevance_floor=relevance_floor,
         )
 
         typer.echo(json.dumps(result.model_dump(), indent=2) if output_json else result.packet)
@@ -307,12 +321,13 @@ def compress_raw(
     query_text: Annotated[
         str, typer.Option("--query", help="Optional query to focus compression.")
     ] = "",
-    chunk_size: ChunkSizeOpt = DEFAULT_CHUNK_SIZE,
-    overlap: OverlapOpt = DEFAULT_CHUNK_OVERLAP,
+    chunk_size: ChunkSizeOpt = _RUNTIME.chunk_size_words,
+    overlap: OverlapOpt = _RUNTIME.chunk_overlap_words,
     dimensions: DimensionsOpt = DEFAULT_DIMENSIONS,
-    top_k: TopKOpt = 5,
+    top_k: TopKOpt = _RUNTIME.default_top_k,
     fts_k: FtsKOpt = 12,
     word_budget: WordBudgetOpt = 500,
+    relevance_floor: RelevanceFloorOpt = _RUNTIME.relevance_floor,
 ) -> None:
     """Zero-Turn compression: read raw text from stdin and output a context packet.
 
@@ -358,6 +373,7 @@ def compress_raw(
             query_cache_ttl_seconds=0,
             dimensions=dimensions,
             word_budget=word_budget,
+            relevance_floor=relevance_floor,
         )
 
         typer.echo(result.packet)
@@ -423,6 +439,7 @@ def self_test() -> None:
                 "query_cache_ttl_seconds": DEFAULT_QUERY_CACHE_TTL_SECONDS,
                 "dimensions": DEFAULT_DIMENSIONS,
                 "word_budget": DEFAULT_WORD_BUDGET,
+                "relevance_floor": float(DEFAULT_RELEVANCE_FLOOR),
             }
             result = run_retrieval_pipeline(**_pipeline_kwargs)
             result_repeat = run_retrieval_pipeline(**_pipeline_kwargs)
@@ -445,7 +462,7 @@ def self_test() -> None:
         "bm25_enabled": bool(result_dict["retrieval"]["bm25_enabled"]),
         "fts_hits_gt_zero": int(result_dict["retrieval"]["fts_hits"]) > 0,
         "vector_hits_valid_for_mode": (vector_hits > 0) if vector_hits_expected else True,
-        "selected_chunks_le_top_k": int(result_dict["selected_chunks"]) <= DEFAULT_TOP_K,
+        "selected_chunks_le_top_k": int(result_dict["selected_chunks"]) <= int(_pipeline_kwargs["top_k"]),
         "compressed_le_selected_tokens": (
             int(result_dict["token_metrics"]["compressed_tokens"])
             <= int(result_dict["token_metrics"]["selected_chunk_tokens"])
@@ -475,16 +492,17 @@ def benchmark(
         list[str], typer.Option("--inputs", help="Files or directories to benchmark.")
     ],
     db: DbOpt = str(DEFAULT_DB_PATH),
-    chunk_size: ChunkSizeOpt = DEFAULT_CHUNK_SIZE,
-    overlap: OverlapOpt = DEFAULT_CHUNK_OVERLAP,
+    chunk_size: ChunkSizeOpt = _RUNTIME.chunk_size_words,
+    overlap: OverlapOpt = _RUNTIME.chunk_overlap_words,
     embedding_backend: EmbBackendOpt = DEFAULT_EMBEDDING_BACKEND,
     embedding_model: EmbModelOpt = DEFAULT_EMBEDDING_MODEL,
     dimensions: DimensionsOpt = DEFAULT_DIMENSIONS,
-    top_k: TopKOpt = DEFAULT_TOP_K,
+    top_k: TopKOpt = _RUNTIME.default_top_k,
     fts_k: FtsKOpt = DEFAULT_FTS_K,
     vector_k: VectorKOpt = DEFAULT_VECTOR_K,
     hybrid_mode: HybridModeOpt = DEFAULT_HYBRID_MODE,
-    word_budget: WordBudgetOpt = DEFAULT_WORD_BUDGET,
+    word_budget: WordBudgetOpt = _RUNTIME.compression_word_budget,
+    relevance_floor: RelevanceFloorOpt = _RUNTIME.relevance_floor,
 ) -> None:
     """Run comprehensive benchmarks and generate a metrics report."""
     import time
@@ -565,6 +583,7 @@ def benchmark(
                 query_cache_ttl_seconds=0,
                 dimensions=dimensions,
                 word_budget=word_budget,
+                relevance_floor=relevance_floor,
             )
             q_latency_ms = (time.perf_counter() - q_start) * 1000
             compressed_tokens = result.token_metrics.compressed_tokens
@@ -649,16 +668,17 @@ def benchmark_full(
         list[str], typer.Option("--inputs", help="Files or directories to benchmark.")
     ],
     db: DbOpt = str(DEFAULT_DB_PATH),
-    chunk_size: ChunkSizeOpt = DEFAULT_CHUNK_SIZE,
-    overlap: OverlapOpt = DEFAULT_CHUNK_OVERLAP,
+    chunk_size: ChunkSizeOpt = _RUNTIME.chunk_size_words,
+    overlap: OverlapOpt = _RUNTIME.chunk_overlap_words,
     embedding_backend: EmbBackendOpt = DEFAULT_EMBEDDING_BACKEND,
     embedding_model: EmbModelOpt = DEFAULT_EMBEDDING_MODEL,
     dimensions: DimensionsOpt = DEFAULT_DIMENSIONS,
-    top_k: TopKOpt = DEFAULT_TOP_K,
+    top_k: TopKOpt = _RUNTIME.default_top_k,
     fts_k: FtsKOpt = DEFAULT_FTS_K,
     vector_k: VectorKOpt = DEFAULT_VECTOR_K,
     hybrid_mode: HybridModeOpt = DEFAULT_HYBRID_MODE,
-    word_budget: WordBudgetOpt = DEFAULT_WORD_BUDGET,
+    word_budget: WordBudgetOpt = _RUNTIME.compression_word_budget,
+    relevance_floor: RelevanceFloorOpt = _RUNTIME.relevance_floor,
     iterations: Annotated[int, typer.Option("--iterations", help="Runs per query for latency stats.")] = 3,
     output_format: Annotated[str, typer.Option("--format", help="json | markdown")] = "json",
     skip_accuracy: Annotated[bool, typer.Option("--skip-accuracy", help="Skip accuracy metrics.")] = False,
@@ -710,6 +730,7 @@ def benchmark_full(
         chunk_size=chunk_size,
         overlap=overlap,
         word_budget=word_budget,
+        relevance_floor=relevance_floor,
         num_iterations=iterations,
     )
 
@@ -754,8 +775,8 @@ def benchmark_full(
 def sync(
     inputs: Annotated[list[str], typer.Option("--inputs", help="Files or directories to sync.")],
     db: DbOpt = str(DEFAULT_DB_PATH),
-    chunk_size: ChunkSizeOpt = DEFAULT_CHUNK_SIZE,
-    overlap: OverlapOpt = DEFAULT_CHUNK_OVERLAP,
+    chunk_size: ChunkSizeOpt = _RUNTIME.chunk_size_words,
+    overlap: OverlapOpt = _RUNTIME.chunk_overlap_words,
     embedding_backend: EmbBackendOpt = DEFAULT_EMBEDDING_BACKEND,
     embedding_model: EmbModelOpt = DEFAULT_EMBEDDING_MODEL,
     dimensions: DimensionsOpt = DEFAULT_DIMENSIONS,

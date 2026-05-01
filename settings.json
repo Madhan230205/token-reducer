@@ -1,9 +1,11 @@
 {
   "tokenReducer": {
-    "chunkSizeWords": 220,
-    "chunkOverlapWords": 40,
-    "chunkSizeMinWords": 150,
+    "chunkSizeWords": 100,
+    "chunkOverlapWords": 20,
+    "chunkSizeMinWords": 80,
     "chunkSizeMaxWords": 300,
+    "defaultTopK": 3,
+    "relevanceFloor": 0.18,
     "embeddingDimensions": 256,
     "embeddingBackend": "ml",
     "embeddingModel": "jinaai/jina-embeddings-v2-base-code",
@@ -18,13 +20,13 @@
     "annM": 16,
     "minFinalContexts": 3,
     "maxFinalContexts": 3,
-    "compressionWordBudget": 200,
+    "compressionWordBudget": 150,
     "compressionMaxSelectedRatio": 0.6,
     "queryCacheTtlSeconds": 900,
     "sessionMemoryEnabled": true,
     "maxQueryWords": 500,
     "maxQueryLines": 80,
-    "historyCompactReminderTurns": [12, 20, 28, 36],
+    "historyCompactReminderTurns": [8, 10, 12, 18, 24, 30, 36, 42],
     "preferFtsFirst": true,
     "vectorFallbackMinFtsHits": 3,
     "context7Optional": true,
@@ -38,11 +40,8 @@
     "textRankEnabled": true,
     "textRankDamping": 0.85,
     "textRankIterations": 30,
-
     "embeddingApiEndpoint": "http://localhost:11434",
-
     "pageRankEnabled": true,
-
     "lspFeatures": {
       "importGraphEnabled": true,
       "twoHopExpansionEnabled": false,
@@ -51,7 +50,6 @@
       "symbolIndexEnabled": true,
       "diffProtocolEnabled": true
     },
-
     "scoringWeights": {
       "ftsLexicalRankWeight": 0.35,
       "ftsBm25Weight": 0.65,
@@ -66,11 +64,16 @@
       "importedFileBoost": 1.25,
       "pageRankBoostWeight": 0.10
     },
-
     "embeddingCache": {
       "maxSize": 10000,
       "ttlSeconds": 86400,
       "strategy": "lru"
     }
+  },
+  "promptGuard": {
+    "autoCompactTurn": 10,
+    "autoResetTurn": 40,
+    "criticalResetTurn": 50,
+    "reminderTurns": [5, 8, 10, 12, 15, 20, 28, 36]
   }
 }
