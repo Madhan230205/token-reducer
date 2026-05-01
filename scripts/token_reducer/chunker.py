@@ -568,51 +568,162 @@ def extract_imports(text: str, source: str) -> list[str]:
     return imports
 
 
+_FUNCTION_CALL_KEYWORDS = {
+    "if",
+    "else",
+    "for",
+    "while",
+    "return",
+    "function",
+    "def",
+    "class",
+    "import",
+    "from",
+    "try",
+    "except",
+    "catch",
+    "finally",
+    "with",
+    "as",
+    "print",
+    "len",
+    "str",
+    "int",
+    "float",
+    "list",
+    "dict",
+    "set",
+    "tuple",
+    "True",
+    "False",
+    "None",
+    "self",
+    "this",
+    "new",
+    "const",
+    "let",
+    "var",
+}
+
+
 def extract_function_calls(text: str) -> list[str]:
     """Extract function/method call names from code text."""
-    # Filter out common keywords and built-ins
-    keywords = {
-        "if",
-        "else",
-        "for",
-        "while",
-        "return",
-        "function",
-        "def",
-        "class",
-        "import",
-        "from",
-        "try",
-        "except",
-        "catch",
-        "finally",
-        "with",
-        "as",
-        "print",
-        "len",
-        "str",
-        "int",
-        "float",
-        "list",
-        "dict",
-        "set",
-        "tuple",
-        "True",
-        "False",
-        "None",
-        "self",
-        "this",
-        "new",
-        "const",
-        "let",
-        "var",
-    }
-    calls = []
+    calls: list[str] = []
     for match in _FUNCTION_CALL_PATTERN.finditer(text):
         name = match.group(1)
-        if name not in keywords and not name.startswith("_"):
+        if name not in _FUNCTION_CALL_KEYWORDS and not name.startswith("_"):
             calls.append(name)
-    return list(set(calls))  # Deduplicate
+    return list(set(calls))
+
+
+def function_call_positions(text: str, limit: int = 3) -> list[tuple[str, int, int]]:
+    """First ``limit`` call sites as ``(name, line, character)`` (0-based, LSP)."""
+    out: list[tuple[str, int, int]] = []
+    for match in _FUNCTION_CALL_PATTERN.finditer(text):
+        name = match.group(1)
+        if name in _FUNCTION_CALL_KEYWORDS or name.startswith("_"):
+            continue
+        pos = match.start(1)
+        line = text.count("\n", 0, pos)
+        last_nl = text.rfind("\n", 0, pos)
+        col = pos if last_nl == -1 else pos - last_nl - 1
+        out.append((name, line, col))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def extract_symbols_from_chunk(text: str, source: str) -> list[dict]:
+    """Extract function/class symbols from a code chunk using regex (no DB)."""
+    symbols: list[dict] = []
+    ext = Path(source).suffix.lower()
+
+    if ext == ".py":
+        for match in re.finditer(r"^(?:async\s+)?def\s+(\w+)\s*\(([^)]*)\)", text, re.MULTILINE):
+            symbols.append(
+                {
+                    "name": match.group(1),
+                    "type": "function",
+                    "signature": f"def {match.group(1)}({match.group(2)})",
+                }
+            )
+        for match in re.finditer(r"^class\s+(\w+)(?:\(([^)]*)\))?:", text, re.MULTILINE):
+            symbols.append(
+                {
+                    "name": match.group(1),
+                    "type": "class",
+                    "signature": f"class {match.group(1)}",
+                }
+            )
+    elif ext in {".js", ".ts", ".tsx", ".jsx"}:
+        for match in re.finditer(
+            r"(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)", text, re.MULTILINE
+        ):
+            symbols.append(
+                {
+                    "name": match.group(1),
+                    "type": "function",
+                    "signature": f"function {match.group(1)}({match.group(2)})",
+                }
+            )
+        for match in re.finditer(
+            r"(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>", text, re.MULTILINE
+        ):
+            symbols.append(
+                {
+                    "name": match.group(1),
+                    "type": "function",
+                    "signature": f"const {match.group(1)} = () =>",
+                }
+            )
+        for match in re.finditer(r"class\s+(\w+)(?:\s+extends\s+\w+)?", text, re.MULTILINE):
+            symbols.append(
+                {
+                    "name": match.group(1),
+                    "type": "class",
+                    "signature": f"class {match.group(1)}",
+                }
+            )
+    elif ext == ".go":
+        for match in re.finditer(
+            r"func\s+(?:\([^)]+\)\s+)?(\w+)\s*\(([^)]*)\)", text, re.MULTILINE
+        ):
+            symbols.append(
+                {
+                    "name": match.group(1),
+                    "type": "function",
+                    "signature": f"func {match.group(1)}({match.group(2)})",
+                }
+            )
+        for match in re.finditer(r"type\s+(\w+)\s+struct", text, re.MULTILINE):
+            symbols.append(
+                {
+                    "name": match.group(1),
+                    "type": "struct",
+                    "signature": f"type {match.group(1)} struct",
+                }
+            )
+    elif ext == ".rs":
+        for match in re.finditer(
+            r"(?:pub\s+)?fn\s+(\w+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)", text, re.MULTILINE
+        ):
+            symbols.append(
+                {
+                    "name": match.group(1),
+                    "type": "function",
+                    "signature": f"fn {match.group(1)}({match.group(2)})",
+                }
+            )
+        for match in re.finditer(r"(?:pub\s+)?struct\s+(\w+)", text, re.MULTILINE):
+            symbols.append(
+                {
+                    "name": match.group(1),
+                    "type": "struct",
+                    "signature": f"struct {match.group(1)}",
+                }
+            )
+
+    return symbols
 
 
 # ---------------------------------------------------------------------------

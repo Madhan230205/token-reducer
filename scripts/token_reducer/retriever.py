@@ -489,3 +489,30 @@ def get_query_embedding(
         )
 
     return vec, effective_backend, effective_model
+
+
+def search_bm25(conn: sqlite3.Connection, query: str, top_k: int) -> list[Candidate]:
+    """BM25 / FTS5 lexical retrieval."""
+    return fts_retrieve(conn, query, limit=top_k)
+
+
+def semantic_search(
+    conn: sqlite3.Connection,
+    db_path: Path,
+    query: str,
+    top_k: int,
+    dimensions: int,
+    embedding_backend: str,
+    embedding_model: str | None,
+) -> list[Candidate]:
+    """Dense / hash semantic retrieval (same pipeline as hybrid)."""
+    hits, _, _, _ = vector_retrieve(
+        conn=conn,
+        db_path=db_path,
+        query=query,
+        limit=top_k,
+        dimensions=dimensions,
+        embedding_backend=embedding_backend,
+        embedding_model=embedding_model,
+    )
+    return hits

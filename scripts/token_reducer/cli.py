@@ -462,7 +462,8 @@ def self_test() -> None:
         "bm25_enabled": bool(result_dict["retrieval"]["bm25_enabled"]),
         "fts_hits_gt_zero": int(result_dict["retrieval"]["fts_hits"]) > 0,
         "vector_hits_valid_for_mode": (vector_hits > 0) if vector_hits_expected else True,
-        "selected_chunks_le_top_k": int(result_dict["selected_chunks"]) <= int(_pipeline_kwargs["top_k"]),
+        "selected_chunks_le_top_k": int(result_dict["selected_chunks"])
+        <= int(_pipeline_kwargs["top_k"]),
         "compressed_le_selected_tokens": (
             int(result_dict["token_metrics"]["compressed_tokens"])
             <= int(result_dict["token_metrics"]["selected_chunk_tokens"])
@@ -679,10 +680,16 @@ def benchmark_full(
     hybrid_mode: HybridModeOpt = DEFAULT_HYBRID_MODE,
     word_budget: WordBudgetOpt = _RUNTIME.compression_word_budget,
     relevance_floor: RelevanceFloorOpt = _RUNTIME.relevance_floor,
-    iterations: Annotated[int, typer.Option("--iterations", help="Runs per query for latency stats.")] = 3,
+    iterations: Annotated[
+        int, typer.Option("--iterations", help="Runs per query for latency stats.")
+    ] = 3,
     output_format: Annotated[str, typer.Option("--format", help="json | markdown")] = "json",
-    skip_accuracy: Annotated[bool, typer.Option("--skip-accuracy", help="Skip accuracy metrics.")] = False,
-    skip_stress: Annotated[bool, typer.Option("--skip-stress", help="Skip stress test queries.")] = False,
+    skip_accuracy: Annotated[
+        bool, typer.Option("--skip-accuracy", help="Skip accuracy metrics.")
+    ] = False,
+    skip_stress: Annotated[
+        bool, typer.Option("--skip-stress", help="Skip stress test queries.")
+    ] = False,
 ) -> None:
     """Run comprehensive benchmarks with accuracy metrics, latency percentiles, and cost analysis.
 
@@ -745,7 +752,7 @@ def benchmark_full(
             )
         except ValueError as e:
             err.print(f"[red]Error: {e}[/red]")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from None
 
     if output_format == "markdown":
         typer.echo(format_benchmark_markdown(report))
@@ -756,14 +763,100 @@ def benchmark_full(
     err.print("\n[bold]COMPREHENSIVE BENCHMARK RESULTS[/bold]")
     err.print(f"  Files indexed:          {report['benchmark_summary']['files_indexed']}")
     err.print(f"  Baseline tokens:        {report['baseline_comparison']['baseline_tokens']:,}")
-    err.print(f"  Compressed tokens/query: ~{report['baseline_comparison']['avg_compressed_tokens_per_query']:,.0f}")
-    err.print(f"  Token reduction:        [green]{report['baseline_comparison']['reduction_vs_baseline_pct']}%[/green]")
+    err.print(
+        f"  Compressed tokens/query: ~{report['baseline_comparison']['avg_compressed_tokens_per_query']:,.0f}"
+    )
+    err.print(
+        f"  Token reduction:        [green]{report['baseline_comparison']['reduction_vs_baseline_pct']}%[/green]"
+    )
     err.print(f"  p50 latency:            {report['latency_metrics']['p50_query_ms']} ms")
     err.print(f"  p95 latency:            {report['latency_metrics']['p95_query_ms']} ms")
     if not skip_accuracy:
         err.print(f"  Precision@K:            {report['accuracy_metrics']['precision_at_k']}")
         err.print(f"  Recall@K:               {report['accuracy_metrics']['recall_at_k']}")
-    err.print(f"  Cost savings/100q:      [green]${report['cost_analysis']['savings_per_100_queries_usd']:.2f}[/green]")
+    err.print(
+        f"  Cost savings/100q:      [green]${report['cost_analysis']['savings_per_100_queries_usd']:.2f}[/green]"
+    )
+
+
+@app.command("watch")
+def watch(
+    inputs: Annotated[list[str], typer.Option("--inputs", help="Paths to watch and re-index.")],
+    db: DbOpt = str(DEFAULT_DB_PATH),
+    chunk_size: ChunkSizeOpt = _RUNTIME.chunk_size_words,
+    overlap: OverlapOpt = _RUNTIME.chunk_overlap_words,
+    embedding_backend: EmbBackendOpt = DEFAULT_EMBEDDING_BACKEND,
+    embedding_model: EmbModelOpt = DEFAULT_EMBEDDING_MODEL,
+    dimensions: DimensionsOpt = DEFAULT_DIMENSIONS,
+    debounce: Annotated[
+        float, typer.Option("--debounce", help="Seconds to debounce writes.")
+    ] = 1.5,
+    poll: Annotated[float, typer.Option("--poll", help="Poll interval seconds.")] = 2.0,
+) -> None:
+    """Watch inputs and incrementally refresh the index (debounced)."""
+    from .watch_mode import run_watch
+
+    db_path = Path(db).expanduser().resolve()
+    backend, model = resolve_embedding_backend(
+        requested_backend=embedding_backend,
+        requested_model=embedding_model,
+    )
+    err.print("[dim]Watching (Ctrl+C to stop)…[/dim]")
+    run_watch(
+        inputs,
+        db_path,
+        chunk_size,
+        overlap,
+        dimensions,
+        backend,
+        model,
+        debounce_s=debounce,
+        poll_interval_s=poll,
+        on_tick=lambda s: err.print(f"[dim]indexed +{s.get('files_indexed', 0)} file(s)[/dim]"),
+    )
+
+
+@app.command("debug")
+def debug_cmd(
+    query_text: Annotated[str, typer.Argument(help="Query to trace through retrieval.")],
+    db: DbOpt = str(DEFAULT_DB_PATH),
+    fts_k: FtsKOpt = DEFAULT_FTS_K,
+    vector_k: VectorKOpt = DEFAULT_VECTOR_K,
+    min_fts_hits: MinFtsHitsOpt = DEFAULT_MIN_FTS_HITS,
+    hybrid_mode: HybridModeOpt = DEFAULT_HYBRID_MODE,
+    embedding_backend: EmbBackendOpt = DEFAULT_EMBEDDING_BACKEND,
+    embedding_model: EmbModelOpt = DEFAULT_EMBEDDING_MODEL,
+    dimensions: DimensionsOpt = DEFAULT_DIMENSIONS,
+    top_k: TopKOpt = _RUNTIME.default_top_k,
+) -> None:
+    """Print intent, component scores, and chunk selection rationale."""
+    import json as _json
+
+    from .debug_trace import debug_retrieval_trace
+
+    db_path = Path(db).expanduser().resolve()
+    conn = connect_db(db_path)
+    try:
+        backend, model = resolve_embedding_backend(
+            requested_backend=embedding_backend,
+            requested_model=embedding_model,
+        )
+        out = debug_retrieval_trace(
+            conn,
+            db_path,
+            query_text,
+            fts_k=fts_k,
+            vector_k=vector_k,
+            min_fts_hits=min_fts_hits,
+            hybrid_mode=hybrid_mode,
+            embedding_backend=backend,
+            embedding_model=model,
+            dimensions=dimensions,
+            top_k=top_k,
+        )
+        typer.echo(_json.dumps(out, indent=2))
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1010,8 +1103,6 @@ def stats(
             err.print(f"  Documents:       {index_stats['documents']}")
             err.print(f"  Chunks:          {index_stats['chunks']}")
             err.print(f"  Embeddings:      {index_stats['embeddings']}")
-            err.print(f"  Symbols:         {index_stats['symbols']}")
-            err.print(f"  Dependencies:    {index_stats['file_dependencies']}")
             err.print(f"  Cache entries:   {index_stats['query_cache_entries']}")
             if index_stats["oldest_document"]:
                 err.print(f"  Oldest doc:      {index_stats['oldest_document']}")

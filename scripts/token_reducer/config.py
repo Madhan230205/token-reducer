@@ -9,7 +9,9 @@ DEFAULT_CHUNK_OVERLAP = 40
 DEFAULT_DIMENSIONS = 256
 DEFAULT_FTS_K = 12
 DEFAULT_VECTOR_K = 20
-DEFAULT_TOP_K = 3  # Final reranked chunks passed to compression (raise via settings / --top-k when needed)
+DEFAULT_TOP_K = (
+    3  # Final reranked chunks passed to compression (raise via settings / --top-k when needed)
+)
 DEFAULT_MIN_FTS_HITS = 3
 DEFAULT_WORD_BUDGET = 150
 DEFAULT_HYBRID_MODE = "fallback"
@@ -20,6 +22,34 @@ DEFAULT_ANN_ENGINE = "hnsw"
 DEFAULT_ANN_EF_SEARCH = 160
 DEFAULT_QUERY_CACHE_TTL_SECONDS = 900
 DEFAULT_RELEVANCE_FLOOR = 0.15  # Minimum score threshold for knapsack packing
+
+# Shadow linter (post-edit verification) — keys are normalized file extensions with a leading dot
+DEFAULT_SHADOW_LINTER_CMDS: dict[str, str] = {
+    ".py": "python -m py_compile {file}",
+    ".js": "node --check {file}",
+    ".ts": "npx tsc --noEmit",
+    ".go": "go build {file}",
+    ".rs": "cargo check",
+}
+DEFAULT_SHADOW_LINTER_TIMEOUT = 15
+# Per-extension overrides for slow tools (cold cache / full-project checks). Others use DEFAULT_SHADOW_LINTER_TIMEOUT.
+DEFAULT_SHADOW_LINTER_TIMEOUT_BY_EXT: dict[str, int] = {
+    ".rs": 30,
+    ".ts": 30,
+    ".tsx": 30,
+    ".go": 30,
+}
+
+# Headless LSP subprocesses (extension -> argv). Used for definition lookup in retrieval.
+DEFAULT_LSP_SERVERS: dict[str, list[str]] = {
+    ".py": ["pyright-langserver", "--stdio"],
+    ".ts": ["typescript-language-server", "--stdio"],
+    ".tsx": ["typescript-language-server", "--stdio"],
+    ".js": ["typescript-language-server", "--stdio"],
+    ".jsx": ["typescript-language-server", "--stdio"],
+    ".go": ["gopls"],
+    ".rs": ["rust-analyzer"],
+}
 
 # ONNX Runtime settings for fast CPU-based dense embeddings
 # Model path can be local file or HuggingFace hub model ID

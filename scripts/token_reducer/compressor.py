@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -9,9 +10,37 @@ from .models import (
     Candidate,
     CandidateSummary,
     ContextPacket,
+    OmittedRedundantEntry,
     RetrievalInfo,
     TokenMetrics,
 )
+
+
+def denoise_code_for_plugin(text: str, query: str, strip_imports: bool = True) -> str:
+    """Deduplicate blank lines; optionally drop leading import blocks; trim low-signal comments."""
+    qlow = query.lower()
+    care_imports = any(k in qlow for k in ("import", "from ", "require", "include"))
+    lines = text.splitlines()
+    out: list[str] = []
+    prev_blank = False
+    started_body = False
+    for line in lines:
+        st = line.strip()
+        if strip_imports and not care_imports and not started_body:
+            if st.startswith("import ") or st.startswith("from "):
+                continue
+            if st:
+                started_body = True
+        if st.startswith("#") and len(st) < 120 and not care_imports:
+            if any(k in st for k in ("TODO", "FIXME", "NOTE:", "WARNING")):
+                out.append(line)
+            continue
+        blank = not st
+        if blank and prev_blank:
+            continue
+        prev_blank = blank
+        out.append(line)
+    return "\n".join(out).strip()
 
 
 def split_sentences(text: str) -> list[str]:
@@ -223,6 +252,7 @@ def _merge_run(run: list[Candidate]) -> Candidate:
         fts_rank=run[0].fts_rank,
         vector_rank=run[0].vector_rank,
         vector_score=max(c.vector_score for c in run),
+        structural_score=max(c.structural_score for c in run),
         fts_score=max(c.fts_score for c in run),
         overlap_score=max(c.overlap_score for c in run),
         final_score=max(c.final_score for c in run),
@@ -348,6 +378,9 @@ def build_packet(
     vector_retrieval_path: str,
     referenced_symbols: list[dict] | None = None,
     imported_context: list[Candidate] | None = None,
+    omitted_redundant: list[OmittedRedundantEntry] | None = None,
+    active_context_signature: str = "",
+    claude_context: dict | None = None,
 ) -> ContextPacket:
     source_count = len({c.source for c in selected})
     candidate_pool_tokens = sum(c.token_estimate for c in candidate_pool)
@@ -361,6 +394,8 @@ def build_packet(
         else 0.0
     )
 
+    omitted: list[OmittedRedundantEntry] = list(omitted_redundant or [])
+    ref_syms = list(referenced_symbols or [])
     lines: list[str] = [
         "CONTEXT_PACKET_START",
         f"query: {query}",
@@ -386,6 +421,18 @@ def build_packet(
     )
     for bullet in bullets:
         lines.append(f"- {bullet}")
+    if omitted:
+        lines.append("")
+        lines.append("delta_context_omitted:")
+        for o in omitted:
+            lines.append(json.dumps(o.model_dump(), ensure_ascii=False))
+    if active_context_signature:
+        lines.append(f"active_context_signature: {active_context_signature}")
+    if ref_syms:
+        lines.append("")
+        lines.append("referenced_definitions:")
+        for item in ref_syms:
+            lines.append(json.dumps(item, ensure_ascii=False))
     lines.extend(["", "CONTEXT_PACKET_END"])
 
     retrieval = RetrievalInfo(
@@ -436,4 +483,8 @@ def build_packet(
         bullets=bullets,
         candidates=candidates,
         packet="\n".join(lines),
+        omitted_redundant=omitted,
+        active_context_signature=active_context_signature,
+        referenced_symbols=ref_syms,
+        claude_context=claude_context,
     )

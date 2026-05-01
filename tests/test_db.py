@@ -4,15 +4,14 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from token_reducer.chunker import extract_symbols_from_chunk
 from token_reducer.db import (
     cleanup_query_cache,
     connect_db,
-    extract_symbols_from_chunk,
     get_cached_query_embedding,
     get_cached_query_result,
     get_index_fingerprint,
     get_recent_session_queries,
-    index_file_dependencies,
     load_session_memory,
     save_session_memory,
     session_memory_path,
@@ -48,8 +47,6 @@ class TestConnectDb:
             "chunk_embeddings",
             "query_embeddings",
             "query_cache",
-            "file_dependencies",
-            "symbol_index",
         } <= tables
         conn.close()
 
@@ -317,38 +314,3 @@ class TestUpsertDocument:
         chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         assert embedding_count == chunk_count
         conn.close()
-
-
-# ---------------------------------------------------------------------------
-# index_file_dependencies
-# ---------------------------------------------------------------------------
-
-
-class TestIndexFileDependencies:
-    def test_indexes_python_imports(self, db: sqlite3.Connection) -> None:
-        content = "from os.path import join\nimport sys"
-        count = index_file_dependencies(db, "main.py", content, set())
-        assert count == 2
-        rows = db.execute(
-            "SELECT target_import FROM file_dependencies WHERE source_file = 'main.py'"
-        ).fetchall()
-        imports = {row[0] for row in rows}
-        assert "os.path" in imports
-        assert "sys" in imports
-
-    def test_resolves_import_to_known_file(self, db: sqlite3.Connection, tmp_path: Path) -> None:
-        helper = str(tmp_path / "helpers.py")
-        content = "from helpers import util"
-        indexed = {helper}
-        index_file_dependencies(db, str(tmp_path / "main.py"), content, indexed)
-        # Resolution depends on file existence; just check the row was inserted
-        count = db.execute("SELECT COUNT(*) FROM file_dependencies").fetchone()[0]
-        assert count >= 1
-
-    def test_duplicate_imports_ignored(self, db: sqlite3.Connection) -> None:
-        content = "import os\nimport os"
-        count1 = index_file_dependencies(db, "a.py", content, set())
-        count2 = index_file_dependencies(db, "a.py", content, set())
-        # INSERT OR IGNORE — second call inserts 0 new rows
-        assert count1 >= 1
-        assert count2 == 0

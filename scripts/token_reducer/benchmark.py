@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import TypedDict
 
 from .chunker import estimate_tokens
-from .compressor import build_packet, compress_candidates
 from .config import (
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
@@ -42,17 +41,20 @@ from .db import connect_db, index_corpus
 from .embeddings import resolve_embedding_backend
 from .pipeline import run_retrieval_pipeline
 
-
 # ---------------------------------------------------------------------------
 # Ground Truth Dataset for Accuracy Measurement
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class RelevanceJudgment:
     """A query with known relevant chunks for accuracy measurement."""
+
     query: str
     relevant_keywords: list[str]  # Keywords that MUST appear in relevant results
-    irrelevant_keywords: list[str] = field(default_factory=list)  # Keywords that indicate irrelevance
+    irrelevant_keywords: list[str] = field(
+        default_factory=list
+    )  # Keywords that indicate irrelevance
     expected_files: list[str] = field(default_factory=list)  # Expected source files
 
 
@@ -138,8 +140,10 @@ STRESS_TEST_QUERIES = [
 # Metrics Calculation
 # ---------------------------------------------------------------------------
 
+
 class QueryMetrics(TypedDict):
     """Metrics for a single query execution."""
+
     query: str
     latency_ms: float
     fts_hits: int
@@ -158,6 +162,7 @@ class QueryMetrics(TypedDict):
 @dataclass
 class BenchmarkConfig:
     """Configuration for benchmark runs."""
+
     inputs: list[Path]
     db_path: Path
     top_k: int = DEFAULT_TOP_K
@@ -182,16 +187,16 @@ def calculate_precision_at_k(
     """Calculate Precision@K: fraction of top-K results that are relevant."""
     if not retrieved_texts or k == 0:
         return 0.0
-    
+
     relevant_count = 0
     for text in retrieved_texts[:k]:
         text_lower = text.lower()
         # A result is relevant if it contains any of the relevant keywords
-        if any(kw.lower() in text_lower for kw in judgment.relevant_keywords):
-            # But not if it contains irrelevant keywords (higher weight)
-            if not any(kw.lower() in text_lower for kw in judgment.irrelevant_keywords):
-                relevant_count += 1
-    
+        if any(kw.lower() in text_lower for kw in judgment.relevant_keywords) and not any(
+            kw.lower() in text_lower for kw in judgment.irrelevant_keywords
+        ):
+            relevant_count += 1
+
     return relevant_count / min(k, len(retrieved_texts))
 
 
@@ -203,13 +208,10 @@ def calculate_recall_at_k(
     """Calculate Recall@K: fraction of relevant keywords found in top-K results."""
     if not judgment.relevant_keywords or k == 0:
         return 0.0
-    
+
     combined_text = " ".join(retrieved_texts[:k]).lower()
-    found_keywords = sum(
-        1 for kw in judgment.relevant_keywords 
-        if kw.lower() in combined_text
-    )
-    
+    found_keywords = sum(1 for kw in judgment.relevant_keywords if kw.lower() in combined_text)
+
     return found_keywords / len(judgment.relevant_keywords)
 
 
@@ -232,10 +234,10 @@ def calculate_ndcg(
 ) -> float:
     """Calculate Normalized Discounted Cumulative Gain."""
     import math
-    
+
     if not retrieved_texts or k == 0:
         return 0.0
-    
+
     # Calculate DCG
     dcg = 0.0
     for i, text in enumerate(retrieved_texts[:k], start=1):
@@ -244,23 +246,24 @@ def calculate_ndcg(
         # Normalize by keyword count to get 0-1 range
         norm_relevance = relevance / max(1, len(judgment.relevant_keywords))
         dcg += norm_relevance / math.log2(i + 1)
-    
+
     # Calculate ideal DCG (all relevant at top)
     ideal_relevances = sorted(
         [1.0] * min(k, len(judgment.relevant_keywords)),
         reverse=True,
     )
     idcg = sum(rel / math.log2(i + 2) for i, rel in enumerate(ideal_relevances))
-    
+
     if idcg == 0:
         return 0.0
-    
+
     return dcg / idcg
 
 
 # ---------------------------------------------------------------------------
 # Benchmark Runner
 # ---------------------------------------------------------------------------
+
 
 def run_single_query_benchmark(
     conn: sqlite3.Connection,
@@ -270,10 +273,10 @@ def run_single_query_benchmark(
     judgment: RelevanceJudgment | None = None,
 ) -> QueryMetrics:
     """Run benchmark for a single query and return metrics."""
-    
+
     latencies: list[float] = []
     last_result = None
-    
+
     for _ in range(config.num_iterations):
         start = time.perf_counter()
         result = run_retrieval_pipeline(
@@ -297,34 +300,36 @@ def run_single_query_benchmark(
         latency_ms = (time.perf_counter() - start) * 1000
         latencies.append(latency_ms)
         last_result = result
-    
+
     if last_result is None:
         raise RuntimeError(f"No result for query: {query}")
-    
+
     # Extract texts from candidates for accuracy measurement
-    retrieved_texts = [c.source + " " + str(bullet) for c, bullet in 
-                       zip(last_result.candidates, last_result.bullets, strict=False)]
+    retrieved_texts = [
+        c.source + " " + str(bullet)
+        for c, bullet in zip(last_result.candidates, last_result.bullets, strict=False)
+    ]
     if not retrieved_texts:
         # Fallback to bullets only
         retrieved_texts = last_result.bullets
-    
+
     # Calculate accuracy metrics if we have ground truth
     precision = 0.0
     recall = 0.0
     mrr = 0.0
     ndcg = 0.0
-    
+
     if judgment:
         precision = calculate_precision_at_k(retrieved_texts, judgment, k=config.top_k)
         recall = calculate_recall_at_k(retrieved_texts, judgment, k=config.top_k)
         mrr = calculate_mrr(retrieved_texts, judgment)
         ndcg = calculate_ndcg(retrieved_texts, judgment, k=config.top_k)
-    
+
     raw_tokens = last_result.token_metrics.selected_chunk_tokens
     compressed_tokens = last_result.token_metrics.compressed_tokens
     compression_ratio = raw_tokens / max(1, compressed_tokens)
     savings_pct = ((raw_tokens - compressed_tokens) / max(1, raw_tokens)) * 100
-    
+
     return QueryMetrics(
         query=query,
         latency_ms=statistics.mean(latencies),
@@ -346,7 +351,7 @@ def calculate_baseline_tokens(file_paths: list[Path]) -> tuple[int, int]:
     """Calculate baseline token count if we sent everything (no reduction)."""
     total_tokens = 0
     total_chars = 0
-    
+
     for path in file_paths:
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
@@ -354,7 +359,7 @@ def calculate_baseline_tokens(file_paths: list[Path]) -> tuple[int, int]:
             total_chars += len(content)
         except Exception:
             continue
-    
+
     return total_tokens, total_chars
 
 
@@ -365,38 +370,50 @@ def run_comprehensive_benchmark(
 ) -> dict:
     """
     Run comprehensive benchmark suite and return detailed report.
-    
+
     Returns a report with:
     - benchmark_summary: Overall statistics
     - baseline_comparison: Before/after token counts
-    - latency_metrics: p50/p95/p99 latencies  
+    - latency_metrics: p50/p95/p99 latencies
     - accuracy_metrics: Precision, Recall, MRR, NDCG
     - compression_metrics: Compression ratios
     - cost_analysis: Dollar savings estimates
     - query_details: Per-query breakdown
     """
-    
+
     # Collect input files
     file_paths: list[Path] = []
     for input_path in config.inputs:
         if input_path.is_file():
             file_paths.append(input_path)
         elif input_path.is_dir():
-            for ext in ["py", "ts", "js", "tsx", "jsx", "go", "rs", "java", "c", "cpp", "h", "md", "txt"]:
+            for ext in [
+                "py",
+                "ts",
+                "js",
+                "tsx",
+                "jsx",
+                "go",
+                "rs",
+                "java",
+                "c",
+                "cpp",
+                "h",
+                "md",
+                "txt",
+            ]:
                 file_paths.extend(input_path.rglob(f"*.{ext}"))
-    
+
     if not file_paths:
         raise ValueError("No indexable files found")
-    
+
     # Calculate baseline (sending everything)
     baseline_tokens, baseline_chars = calculate_baseline_tokens(file_paths)
-    
+
     # Initialize database and index
     conn = connect_db(config.db_path)
-    backend, model = resolve_embedding_backend(
-        config.embedding_backend, config.embedding_model
-    )
-    
+    backend, model = resolve_embedding_backend(config.embedding_backend, config.embedding_model)
+
     # Index corpus
     index_start = time.perf_counter()
     stats = index_corpus(
@@ -409,7 +426,7 @@ def run_comprehensive_benchmark(
         embedding_model=model,
     )
     index_latency_ms = (time.perf_counter() - index_start) * 1000
-    
+
     # Run accuracy queries with ground truth
     accuracy_metrics: list[QueryMetrics] = []
     if include_accuracy:
@@ -422,7 +439,7 @@ def run_comprehensive_benchmark(
                 judgment=judgment,
             )
             accuracy_metrics.append(metrics)
-    
+
     # Run stress test queries
     stress_metrics: list[QueryMetrics] = []
     if include_stress:
@@ -435,40 +452,50 @@ def run_comprehensive_benchmark(
                 judgment=None,
             )
             stress_metrics.append(metrics)
-    
+
     conn.close()
-    
+
     # Aggregate metrics
     all_metrics = accuracy_metrics + stress_metrics
     all_latencies = [m["latency_ms"] for m in all_metrics]
     all_latencies_sorted = sorted(all_latencies)
-    
+
     # Calculate percentiles
     def percentile(data: list[float], p: float) -> float:
         if not data:
             return 0.0
         idx = int(len(data) * p / 100)
         return data[min(idx, len(data) - 1)]
-    
+
     # Aggregate compression stats
     total_raw_tokens = sum(m["raw_tokens"] for m in all_metrics)
     total_compressed_tokens = sum(m["compressed_tokens"] for m in all_metrics)
-    avg_compression_ratio = statistics.mean(m["compression_ratio"] for m in all_metrics) if all_metrics else 0
-    avg_savings_pct = statistics.mean(m["token_savings_pct"] for m in all_metrics) if all_metrics else 0
-    
+    avg_compression_ratio = (
+        statistics.mean(m["compression_ratio"] for m in all_metrics) if all_metrics else 0
+    )
+    avg_savings_pct = (
+        statistics.mean(m["token_savings_pct"] for m in all_metrics) if all_metrics else 0
+    )
+
     # Aggregate accuracy stats (only from ground truth queries)
-    avg_precision = statistics.mean(m["precision_at_k"] for m in accuracy_metrics) if accuracy_metrics else 0
-    avg_recall = statistics.mean(m["recall_at_k"] for m in accuracy_metrics) if accuracy_metrics else 0
+    avg_precision = (
+        statistics.mean(m["precision_at_k"] for m in accuracy_metrics) if accuracy_metrics else 0
+    )
+    avg_recall = (
+        statistics.mean(m["recall_at_k"] for m in accuracy_metrics) if accuracy_metrics else 0
+    )
     avg_mrr = statistics.mean(m["mrr"] for m in accuracy_metrics) if accuracy_metrics else 0
     avg_ndcg = statistics.mean(m["ndcg"] for m in accuracy_metrics) if accuracy_metrics else 0
-    
+
     # Cost analysis (Claude Sonnet pricing as of 2024)
     # Input: $3 per million tokens
     cost_per_1m_tokens = 3.0
     baseline_cost_per_query = (baseline_tokens / 1_000_000) * cost_per_1m_tokens
-    compressed_cost_per_query = (total_compressed_tokens / max(1, len(all_metrics)) / 1_000_000) * cost_per_1m_tokens
+    compressed_cost_per_query = (
+        total_compressed_tokens / max(1, len(all_metrics)) / 1_000_000
+    ) * cost_per_1m_tokens
     savings_per_query = baseline_cost_per_query - compressed_cost_per_query
-    
+
     report = {
         "benchmark_summary": {
             "files_indexed": len(file_paths),
@@ -484,11 +511,18 @@ def run_comprehensive_benchmark(
         "baseline_comparison": {
             "baseline_tokens": baseline_tokens,
             "baseline_chars": baseline_chars,
-            "avg_compressed_tokens_per_query": round(total_compressed_tokens / max(1, len(all_metrics)), 0),
-            "reduction_vs_baseline_pct": round(
-                ((baseline_tokens - (total_compressed_tokens / max(1, len(all_metrics)))) / max(1, baseline_tokens)) * 100, 1
+            "avg_compressed_tokens_per_query": round(
+                total_compressed_tokens / max(1, len(all_metrics)), 0
             ),
-            "interpretation": f"Sending entire codebase would cost {baseline_tokens:,} tokens. Token Reducer delivers ~{round(total_compressed_tokens / max(1, len(all_metrics))):,} tokens per query."
+            "reduction_vs_baseline_pct": round(
+                (
+                    (baseline_tokens - (total_compressed_tokens / max(1, len(all_metrics))))
+                    / max(1, baseline_tokens)
+                )
+                * 100,
+                1,
+            ),
+            "interpretation": f"Sending entire codebase would cost {baseline_tokens:,} tokens. Token Reducer delivers ~{round(total_compressed_tokens / max(1, len(all_metrics))):,} tokens per query.",
         },
         "latency_metrics": {
             "index_time_ms": round(index_latency_ms, 2),
@@ -524,7 +558,7 @@ def run_comprehensive_benchmark(
         "accuracy_query_details": accuracy_metrics,
         "stress_query_details": stress_metrics,
     }
-    
+
     return report
 
 
@@ -542,13 +576,13 @@ def _interpret_accuracy(precision: float, recall: float, mrr: float) -> str:
     else:
         quality = "Needs Improvement"
         desc = "Retrieved chunks may not be well-aligned with queries."
-    
+
     return f"{quality}: {desc} (P@K={precision:.2f}, R@K={recall:.2f}, MRR={mrr:.2f})"
 
 
 def format_benchmark_markdown(report: dict) -> str:
     """Format benchmark report as Markdown for documentation."""
-    
+
     lines = [
         "# Token Reducer Benchmark Results",
         "",
@@ -611,7 +645,7 @@ def format_benchmark_markdown(report: dict) -> str:
         "",
         "*Generated by Token Reducer Benchmark Suite*",
     ]
-    
+
     return "\n".join(lines)
 
 

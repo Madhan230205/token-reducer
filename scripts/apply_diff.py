@@ -32,9 +32,16 @@ Protocols supported
 Transactional safety
 --------------------
 All blocks targeting the same file are staged in-memory first.
-The file is only written to disk if every block for that file succeeds.
+The file is only written to disk if every block targeting it succeeds.
 On any block failure the entire file transaction is rolled back (original
 content preserved on disk).
+
+Shadow linter (post-write)
+--------------------------
+After a successful write, ``token_reducer.linter.run_shadow_linter`` runs the
+configured command for that file type (from ``settings.json`` /
+``TokenReducerRuntimeConfig``). If the check fails, the file is immediately
+restored from the in-memory original and the edit counts as failed.
 
 Usage:
     python apply_diff.py --input response.txt
@@ -50,6 +57,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from token_reducer.linter import run_shadow_linter  # noqa: E402
+from token_reducer.plugin_settings import get_runtime_defaults  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Tree-sitter optional import
@@ -451,8 +465,24 @@ def apply_diffs(
             else:
                 try:
                     target.write_text(current, encoding="utf-8")
-                    results["applied"] += len(file_blocks)
-                    results["messages"].extend(tx_messages)
+                    rt = get_runtime_defaults()
+                    linter_ok, linter_msg = run_shadow_linter(
+                        target,
+                        target.suffix.lower(),
+                        rt.shadow_linter_cmds,
+                        rt.shadow_linter_timeout,
+                        rt.shadow_linter_timeout_by_ext,
+                    )
+                    if not linter_ok:
+                        target.write_text(original, encoding="utf-8")
+                        results["failed"] += len(file_blocks)
+                        results["messages"].append(
+                            "❌ EDIT REJECTED by Shadow Linter. File rolled back. Error logs:\n"
+                            + linter_msg
+                        )
+                    else:
+                        results["applied"] += len(file_blocks)
+                        results["messages"].extend(tx_messages)
                 except Exception as exc:
                     results["failed"] += len(file_blocks)
                     results["messages"].append(f"Failed to write {target}: {exc}")

@@ -4,6 +4,7 @@ import re
 from datetime import UTC, datetime
 from hashlib import blake2b
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -24,6 +25,7 @@ class Candidate(BaseModel):
     fts_score: float = 0.0
     vector_score: float = 0.0
     overlap_score: float = 0.0
+    structural_score: float = 0.0
     final_score: float = 0.0
 
 
@@ -123,6 +125,18 @@ class CandidateSummary(BaseModel):
     vector_rank: int | None = None
 
 
+class OmittedRedundantEntry(BaseModel):
+    """Chunk skipped because it is already in the session active context with unchanged file."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: Literal["omitted_redundant"] = "omitted_redundant"
+    chunk_id: int
+    source: str
+    chunk_index: int
+    reason: str
+
+
 class SessionMemory(BaseModel):
     """Session memory for a context packet."""
 
@@ -130,6 +144,7 @@ class SessionMemory(BaseModel):
 
     session_id: str
     recent_queries: list[str] = Field(default_factory=list)
+    active_context_tracked: int = 0
 
 
 class CacheInfo(BaseModel):
@@ -158,6 +173,10 @@ class ContextPacket(BaseModel):
     packet: str
     session_memory: SessionMemory | None = None
     cache: CacheInfo | None = None
+    omitted_redundant: list[OmittedRedundantEntry] = Field(default_factory=list)
+    active_context_signature: str = ""
+    referenced_symbols: list[dict] = Field(default_factory=list)
+    claude_context: dict | None = None
 
 
 class Symbol(BaseModel):

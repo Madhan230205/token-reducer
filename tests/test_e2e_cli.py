@@ -47,18 +47,14 @@ def _run(*args: str) -> subprocess.CompletedProcess:
 class TestBenchmark:
     def test_exit_code_zero(self, tmp_path: Path) -> None:
         db = str(tmp_path / "bench.db")
-        result = _run(
-            "benchmark", "--inputs", BENCH_INPUTS, "--db", db, *BENCH_EXTRA
-        )
+        result = _run("benchmark", "--inputs", BENCH_INPUTS, "--db", db, *BENCH_EXTRA)
         assert result.returncode == 0, (
             f"benchmark exited {result.returncode}\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         )
 
     def test_banner_on_stderr(self, tmp_path: Path) -> None:
         db = str(tmp_path / "bench.db")
-        result = _run(
-            "benchmark", "--inputs", BENCH_INPUTS, "--db", db, *BENCH_EXTRA
-        )
+        result = _run("benchmark", "--inputs", BENCH_INPUTS, "--db", db, *BENCH_EXTRA)
         # The human-readable summary is written to stderr via rich Console(stderr=True)
         assert "TOKEN REDUCER BENCHMARK" in result.stderr, (
             f"Expected 'TOKEN REDUCER BENCHMARK' in stderr.\nSTDERR:\n{result.stderr}"
@@ -66,32 +62,28 @@ class TestBenchmark:
 
     def test_token_savings_in_stderr(self, tmp_path: Path) -> None:
         db = str(tmp_path / "bench.db")
-        result = _run(
-            "benchmark", "--inputs", BENCH_INPUTS, "--db", db, *BENCH_EXTRA
-        )
+        result = _run("benchmark", "--inputs", BENCH_INPUTS, "--db", db, *BENCH_EXTRA)
         assert "Token savings:" in result.stderr, (
             f"Expected 'Token savings:' in stderr.\nSTDERR:\n{result.stderr}"
         )
 
     def test_files_indexed_positive(self, tmp_path: Path) -> None:
         db = str(tmp_path / "bench.db")
-        result = _run(
-            "benchmark", "--inputs", BENCH_INPUTS, "--db", db, *BENCH_EXTRA
-        )
+        result = _run("benchmark", "--inputs", BENCH_INPUTS, "--db", db, *BENCH_EXTRA)
         assert "Files indexed:" in result.stderr, (
             f"Expected 'Files indexed:' in stderr.\nSTDERR:\n{result.stderr}"
         )
 
     def test_stdout_is_valid_json(self, tmp_path: Path) -> None:
         db = str(tmp_path / "bench.db")
-        result = _run(
-            "benchmark", "--inputs", BENCH_INPUTS, "--db", db, *BENCH_EXTRA
-        )
+        result = _run("benchmark", "--inputs", BENCH_INPUTS, "--db", db, *BENCH_EXTRA)
         assert result.returncode == 0
         try:
             report = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
-            pytest.fail(f"benchmark stdout is not valid JSON: {exc}\nSTDOUT:\n{result.stdout[:500]}")
+            pytest.fail(
+                f"benchmark stdout is not valid JSON: {exc}\nSTDOUT:\n{result.stdout[:500]}"
+            )
         assert report["benchmark_summary"]["files_indexed"] > 0
 
     def test_no_files_exits_nonzero(self, tmp_path: Path) -> None:
@@ -143,7 +135,11 @@ class TestRunHuman:
         try:
             parsed = json.loads(result.stdout)
             # If it parses, it should NOT have the full model_dump structure
-            is_full_model = isinstance(parsed, dict) and "selected_chunks" in parsed and "token_metrics" in parsed
+            is_full_model = (
+                isinstance(parsed, dict)
+                and "selected_chunks" in parsed
+                and "token_metrics" in parsed
+            )
             assert not is_full_model, "Expected human-readable output but got full JSON model dump"
         except json.JSONDecodeError:
             pass  # Non-JSON output is correct
@@ -189,7 +185,9 @@ class TestRunJson:
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
-            pytest.fail(f"run --json stdout is not valid JSON: {exc}\nSTDOUT:\n{result.stdout[:500]}")
+            pytest.fail(
+                f"run --json stdout is not valid JSON: {exc}\nSTDOUT:\n{result.stdout[:500]}"
+            )
         assert isinstance(data, dict)
 
     def test_required_keys_present(self, tmp_path: Path) -> None:

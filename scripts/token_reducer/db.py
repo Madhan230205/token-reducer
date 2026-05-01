@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import re
 import sqlite3
 import sys
 from collections.abc import Iterable
@@ -13,20 +12,17 @@ from .chunker import (
     chunk_text,
     clean_text,
     estimate_tokens,
-    extract_function_calls,
-    extract_imports,
     is_code_file,
     is_minified,
     read_text_file,
-    resolve_import_to_file,
 )
 from .embeddings import embed_text
 from .models import (
-    Candidate,
     hash_text,
     utc_now_epoch,
     utc_now_iso,
 )
+from .structure import meta_json_from_chunk
 
 
 def connect_db(db_path: Path) -> sqlite3.Connection:
@@ -55,6 +51,7 @@ def connect_db(db_path: Path) -> sqlite3.Connection:
                 chunk_index INTEGER NOT NULL,
                 text TEXT NOT NULL,
                 token_estimate INTEGER NOT NULL,
+                meta_json TEXT,
                 FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE,
                 UNIQUE(document_id, chunk_index)
             );
@@ -99,40 +96,6 @@ def connect_db(db_path: Path) -> sqlite3.Connection:
 
             CREATE INDEX IF NOT EXISTS idx_query_cache_expires
             ON query_cache(expires_at_epoch);
-
-            -- Import graph for "fake LSP" functionality
-            CREATE TABLE IF NOT EXISTS file_dependencies (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source_file TEXT NOT NULL,
-                target_import TEXT NOT NULL,
-                resolved_file TEXT,
-                UNIQUE(source_file, target_import)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_file_deps_source
-            ON file_dependencies(source_file);
-
-            CREATE INDEX IF NOT EXISTS idx_file_deps_resolved
-            ON file_dependencies(resolved_file);
-
-            -- Symbol index for 2-hop expansion
-            CREATE TABLE IF NOT EXISTS symbol_index (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                file_path TEXT NOT NULL,
-                symbol_name TEXT NOT NULL,
-                symbol_type TEXT,
-                chunk_id INTEGER,
-                line_start INTEGER,
-                line_end INTEGER,
-                signature TEXT,
-                FOREIGN KEY (chunk_id) REFERENCES chunks(id)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_symbol_name
-            ON symbol_index(symbol_name);
-
-            CREATE INDEX IF NOT EXISTS idx_symbol_file
-            ON symbol_index(file_path);
             """
         )
 
@@ -142,6 +105,7 @@ def connect_db(db_path: Path) -> sqlite3.Connection:
             "ALTER TABLE chunk_embeddings ADD COLUMN model_name TEXT",
             "ALTER TABLE documents ADD COLUMN file_mtime REAL",
             "ALTER TABLE documents ADD COLUMN file_hash TEXT",
+            "ALTER TABLE chunks ADD COLUMN meta_json TEXT",
         ):
             with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute(statement)
@@ -344,6 +308,13 @@ def upsert_document(
     embedding_model: str | None,
 ) -> int:
     now = utc_now_iso()
+    file_hash = hash_text(raw_text)
+    try:
+        src_path = Path(source)
+        file_mtime = src_path.stat().st_mtime if src_path.is_file() else None
+    except OSError:
+        file_mtime = None
+
     existing = conn.execute("SELECT id FROM documents WHERE source = ?", (source,)).fetchone()
 
     if existing:
@@ -360,18 +331,18 @@ def upsert_document(
         conn.execute(
             """
             UPDATE documents
-            SET raw_text = ?, cleaned_text = ?, updated_at = ?
+            SET raw_text = ?, cleaned_text = ?, updated_at = ?, file_hash = ?, file_mtime = ?
             WHERE id = ?
             """,
-            (raw_text, cleaned_text, now, document_id),
+            (raw_text, cleaned_text, now, file_hash, file_mtime, document_id),
         )
     else:
         cursor = conn.execute(
             """
-            INSERT INTO documents (source, raw_text, cleaned_text, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO documents (source, raw_text, cleaned_text, created_at, updated_at, file_hash, file_mtime)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (source, raw_text, cleaned_text, now, now),
+            (source, raw_text, cleaned_text, now, now, file_hash, file_mtime),
         )
         document_id = int(cursor.lastrowid)
 
@@ -380,12 +351,13 @@ def upsert_document(
     else:
         chunks = chunk_text(cleaned_text, chunk_size_words, overlap_words)
     for idx, chunk in enumerate(chunks):
+        meta = meta_json_from_chunk(chunk, source)
         cursor = conn.execute(
             """
-            INSERT INTO chunks (document_id, chunk_index, text, token_estimate)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO chunks (document_id, chunk_index, text, token_estimate, meta_json)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (document_id, idx, chunk, estimate_tokens(chunk)),
+            (document_id, idx, chunk, estimate_tokens(chunk), meta),
         )
         chunk_id = int(cursor.lastrowid)
         conn.execute("INSERT INTO chunks_fts (rowid, text) VALUES (?, ?)", (chunk_id, chunk))
@@ -456,277 +428,6 @@ def index_corpus(
     return {"files_indexed": files_indexed, "chunks_indexed": chunks_indexed}
 
 
-def index_file_dependencies(
-    conn: sqlite3.Connection,
-    file_path: str,
-    content: str,
-    indexed_files: set[str],
-) -> int:
-    """Extract and store import dependencies for a file."""
-    imports = extract_imports(content, file_path)
-    count = 0
-
-    for import_path in imports:
-        resolved = resolve_import_to_file(import_path, file_path, indexed_files)
-        try:
-            cur = conn.execute(
-                """
-                INSERT OR IGNORE INTO file_dependencies (source_file, target_import, resolved_file)
-                VALUES (?, ?, ?)
-                """,
-                (file_path, import_path, resolved),
-            )
-            if cur.rowcount > 0:
-                count += 1
-        except Exception:
-            continue
-
-    return count
-
-
-def index_symbols(
-    conn: sqlite3.Connection,
-    file_path: str,
-    chunk_id: int,
-    chunk_text: str,
-) -> int:
-    """Extract and store symbols from a chunk."""
-    symbols = extract_symbols_from_chunk(chunk_text, file_path)
-    count = 0
-
-    for symbol in symbols:
-        try:
-            conn.execute(
-                """
-                INSERT INTO symbol_index (file_path, symbol_name, symbol_type, chunk_id, signature)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (file_path, symbol["name"], symbol["type"], chunk_id, symbol.get("signature")),
-            )
-            count += 1
-        except Exception:
-            continue
-
-    return count
-
-
-def extract_symbols_from_chunk(text: str, source: str) -> list[dict]:
-    """Extract function/class symbols from a code chunk using AST or regex."""
-    symbols: list[dict] = []
-    ext = Path(source).suffix.lower()
-
-    # Use regex patterns as fallback
-    if ext == ".py":
-        # Python: def func_name(...) or class ClassName
-        for match in re.finditer(r"^(?:async\s+)?def\s+(\w+)\s*\(([^)]*)\)", text, re.MULTILINE):
-            symbols.append(
-                {
-                    "name": match.group(1),
-                    "type": "function",
-                    "signature": f"def {match.group(1)}({match.group(2)})",
-                }
-            )
-        for match in re.finditer(r"^class\s+(\w+)(?:\(([^)]*)\))?:", text, re.MULTILINE):
-            symbols.append(
-                {
-                    "name": match.group(1),
-                    "type": "class",
-                    "signature": f"class {match.group(1)}",
-                }
-            )
-    elif ext in {".js", ".ts", ".tsx", ".jsx"}:
-        # JS/TS: function name() or const name = () =>
-        for match in re.finditer(
-            r"(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)", text, re.MULTILINE
-        ):
-            symbols.append(
-                {
-                    "name": match.group(1),
-                    "type": "function",
-                    "signature": f"function {match.group(1)}({match.group(2)})",
-                }
-            )
-        for match in re.finditer(
-            r"(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>", text, re.MULTILINE
-        ):
-            symbols.append(
-                {
-                    "name": match.group(1),
-                    "type": "function",
-                    "signature": f"const {match.group(1)} = () =>",
-                }
-            )
-        for match in re.finditer(r"class\s+(\w+)(?:\s+extends\s+\w+)?", text, re.MULTILINE):
-            symbols.append(
-                {
-                    "name": match.group(1),
-                    "type": "class",
-                    "signature": f"class {match.group(1)}",
-                }
-            )
-    elif ext == ".go":
-        for match in re.finditer(
-            r"func\s+(?:\([^)]+\)\s+)?(\w+)\s*\(([^)]*)\)", text, re.MULTILINE
-        ):
-            symbols.append(
-                {
-                    "name": match.group(1),
-                    "type": "function",
-                    "signature": f"func {match.group(1)}({match.group(2)})",
-                }
-            )
-        for match in re.finditer(r"type\s+(\w+)\s+struct", text, re.MULTILINE):
-            symbols.append(
-                {
-                    "name": match.group(1),
-                    "type": "struct",
-                    "signature": f"type {match.group(1)} struct",
-                }
-            )
-    elif ext == ".rs":
-        for match in re.finditer(
-            r"(?:pub\s+)?fn\s+(\w+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)", text, re.MULTILINE
-        ):
-            symbols.append(
-                {
-                    "name": match.group(1),
-                    "type": "function",
-                    "signature": f"fn {match.group(1)}({match.group(2)})",
-                }
-            )
-        for match in re.finditer(r"(?:pub\s+)?struct\s+(\w+)", text, re.MULTILINE):
-            symbols.append(
-                {
-                    "name": match.group(1),
-                    "type": "struct",
-                    "signature": f"struct {match.group(1)}",
-                }
-            )
-
-    return symbols
-
-
-def get_imported_files(conn: sqlite3.Connection, source_file: str) -> list[str]:
-    """Get list of files imported by a source file."""
-    rows = conn.execute(
-        """
-        SELECT DISTINCT resolved_file FROM file_dependencies
-        WHERE source_file = ? AND resolved_file IS NOT NULL
-        """,
-        (source_file,),
-    ).fetchall()
-    return [str(row[0]) for row in rows]
-
-
-def lookup_symbol_definition(
-    conn: sqlite3.Connection, symbol_name: str, limit: int = 3
-) -> list[dict]:
-    """Look up symbol definitions by name (for 2-hop expansion)."""
-    rows = conn.execute(
-        """
-        SELECT s.file_path, s.symbol_type, s.signature, c.text
-        FROM symbol_index s
-        JOIN chunks c ON s.chunk_id = c.id
-        WHERE s.symbol_name = ?
-        LIMIT ?
-        """,
-        (symbol_name, limit),
-    ).fetchall()
-
-    return [
-        {
-            "file": row[0],
-            "type": row[1],
-            "signature": row[2],
-            "definition": row[3][:500] if row[3] else None,  # Truncate long definitions
-        }
-        for row in rows
-    ]
-
-
-def expand_symbols_two_hop(
-    conn: sqlite3.Connection,
-    candidates: list[Candidate],
-    max_expansions: int = 5,
-) -> list[dict]:
-    """Perform 2-hop symbol expansion on selected candidates.
-
-    Extracts function calls from selected chunks and fetches their definitions.
-    This simulates LSP "go to definition" functionality.
-    """
-    referenced_symbols: list[dict] = []
-    seen_symbols: set[str] = set()
-
-    for candidate in candidates[:3]:  # Only expand top 3 chunks
-        calls = extract_function_calls(candidate.text)
-
-        for call_name in calls:
-            if call_name in seen_symbols:
-                continue
-            if len(referenced_symbols) >= max_expansions:
-                break
-
-            definitions = lookup_symbol_definition(conn, call_name, limit=1)
-            if definitions:
-                seen_symbols.add(call_name)
-                referenced_symbols.append(
-                    {
-                        "symbol": call_name,
-                        "from_chunk": candidate.source,
-                        **definitions[0],
-                    }
-                )
-
-    return referenced_symbols
-
-
-def fetch_imported_context(
-    conn: sqlite3.Connection,
-    selected_sources: list[str],
-    query: str,
-    limit_per_file: int = 2,
-) -> list[Candidate]:
-    """Fetch additional context from files imported by selected sources."""
-    additional_candidates: list[Candidate] = []
-    seen_files: set[str] = set(selected_sources)
-
-    for source in selected_sources:
-        imported_files = get_imported_files(conn, source)
-
-        for imported_file in imported_files:
-            if imported_file in seen_files:
-                continue
-            seen_files.add(imported_file)
-
-            # Do a quick FTS search in the imported file
-            rows = conn.execute(
-                """
-                SELECT c.id, c.text, c.chunk_index, c.token_estimate, d.source
-                FROM chunks_fts f
-                JOIN chunks c ON f.rowid = c.id
-                JOIN documents d ON c.document_id = d.id
-                WHERE chunks_fts MATCH ? AND d.source = ?
-                ORDER BY rank
-                LIMIT ?
-                """,
-                (query, imported_file, limit_per_file),
-            ).fetchall()
-
-            for row in rows:
-                additional_candidates.append(
-                    Candidate(
-                        chunk_id=int(row[0]),
-                        text=str(row[1]),
-                        chunk_index=int(row[2]),
-                        token_estimate=int(row[3]),
-                        source=str(row[4]),
-                        fts_rank=len(additional_candidates),
-                    )
-                )
-
-    return additional_candidates
-
-
 # ---------------------------------------------------------------------------
 # Context Lifecycle Management Functions
 # ---------------------------------------------------------------------------
@@ -739,8 +440,6 @@ def get_index_stats(conn: sqlite3.Connection) -> dict:
     embedding_count = conn.execute("SELECT COUNT(*) FROM chunk_embeddings").fetchone()[0]
     cache_count = conn.execute("SELECT COUNT(*) FROM query_cache").fetchone()[0]
     query_emb_count = conn.execute("SELECT COUNT(*) FROM query_embeddings").fetchone()[0]
-    symbol_count = conn.execute("SELECT COUNT(*) FROM symbol_index").fetchone()[0]
-    dep_count = conn.execute("SELECT COUNT(*) FROM file_dependencies").fetchone()[0]
 
     # Get oldest and newest document timestamps
     date_row = conn.execute("SELECT MIN(created_at), MAX(updated_at) FROM documents").fetchone()
@@ -759,8 +458,6 @@ def get_index_stats(conn: sqlite3.Connection) -> dict:
         "embeddings": embedding_count,
         "query_cache_entries": cache_count,
         "query_embeddings": query_emb_count,
-        "symbols": symbol_count,
-        "file_dependencies": dep_count,
         "oldest_document": oldest_doc,
         "newest_document": newest_doc,
         "embedding_backends": backends,
@@ -828,8 +525,6 @@ def remove_documents_by_source(conn: sqlite3.Connection, sources: list[str]) -> 
                 conn.execute("DELETE FROM chunk_embeddings WHERE chunk_id = ?", (cid,))
                 conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (cid,))
             conn.execute("DELETE FROM chunks WHERE document_id = ?", (doc_id,))
-            conn.execute("DELETE FROM symbol_index WHERE file_path = ?", (source,))
-            conn.execute("DELETE FROM file_dependencies WHERE source_file = ?", (source,))
             conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
             removed += 1
 
@@ -857,8 +552,6 @@ def garbage_collect(
         "orphaned_embeddings": 0,
         "expired_cache_entries": 0,
         "stale_query_embeddings": 0,
-        "orphaned_symbols": 0,
-        "orphaned_dependencies": 0,
     }
 
     # Find orphaned chunks (chunks without documents)
@@ -886,24 +579,6 @@ def garbage_collect(
     ).fetchone()[0]
     stats["expired_cache_entries"] = expired_cache
 
-    # Find orphaned symbols (symbols referencing non-existent files)
-    orphan_symbols = conn.execute(
-        """
-        SELECT COUNT(*) FROM symbol_index si
-        WHERE NOT EXISTS (SELECT 1 FROM documents d WHERE d.source = si.file_path)
-        """
-    ).fetchone()[0]
-    stats["orphaned_symbols"] = orphan_symbols
-
-    # Find orphaned dependencies
-    orphan_deps = conn.execute(
-        """
-        SELECT COUNT(*) FROM file_dependencies fd
-        WHERE NOT EXISTS (SELECT 1 FROM documents d WHERE d.source = fd.source_file)
-        """
-    ).fetchone()[0]
-    stats["orphaned_dependencies"] = orphan_deps
-
     if not dry_run:
         # Delete orphaned chunks
         conn.execute(
@@ -927,26 +602,6 @@ def garbage_collect(
 
         # Delete expired cache entries
         conn.execute("DELETE FROM query_cache WHERE expires_at_epoch <= ?", (now_epoch,))
-
-        # Delete orphaned symbols
-        conn.execute(
-            """
-            DELETE FROM symbol_index WHERE id IN (
-                SELECT si.id FROM symbol_index si
-                WHERE NOT EXISTS (SELECT 1 FROM documents d WHERE d.source = si.file_path)
-            )
-            """
-        )
-
-        # Delete orphaned dependencies
-        conn.execute(
-            """
-            DELETE FROM file_dependencies WHERE id IN (
-                SELECT fd.id FROM file_dependencies fd
-                WHERE NOT EXISTS (SELECT 1 FROM documents d WHERE d.source = fd.source_file)
-            )
-            """
-        )
 
         conn.commit()
 
