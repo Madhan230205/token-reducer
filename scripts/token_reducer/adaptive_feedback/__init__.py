@@ -14,9 +14,10 @@ from .debouncer import (
     maybe_schedule_flush,
     persist_staging_after_events,
     record_event_and_should_flush,
+    record_events_and_maybe_flush,
     run_flush_pipeline,
 )
-from .event_log import append_event, default_adapt_dir, default_events_path, iter_recent_events
+from .event_log import append_event, default_adapt_dir, default_events_path, events_path, iter_recent_events
 from .guardrails import clamp_committed
 from .models import SCHEMA_VERSION, CommittedActuators, OutcomeEvent, SignalType, StagingState
 from .redaction import bound_diagnostic, hash_text
@@ -47,6 +48,7 @@ __all__ = [
     "clamp_committed",
     "default_adapt_dir",
     "default_events_path",
+    "events_path",
     "hash_text",
     "iter_recent_events",
     "load_committed",
@@ -56,6 +58,7 @@ __all__ = [
     "persist_staging_after_events",
     "promote_committed_atomic",
     "record_event_and_should_flush",
+    "record_events_and_maybe_flush",
     "run_flush_pipeline",
     "save_staging",
 ]

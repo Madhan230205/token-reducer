@@ -20,6 +20,10 @@ def _intent_dict(intent: dict[str, Any] | Any) -> dict[str, Any]:
     return dict(intent)
 
 
+def _legacy_intent(intent: dict[str, Any]) -> str:
+    return str(_intent_dict(intent).get("legacy_intent", "explain_code"))
+
+
 class CoordinatorAgent(SubAgent):
     """Fills shared ``run_memory`` (decomposition + focus signals) for the same-pass agents."""
 
@@ -64,15 +68,21 @@ class FilterAgent(SubAgent):
         return int(state.get("_chunk_count", 0)) > 1
 
     def run(self, chunks: list[Candidate], prompt: str, state: dict[str, Any]) -> list[Candidate]:
-        _ = state
+        _ = prompt
         if not chunks:
             return chunks
+        leg = _legacy_intent(state.get("structured_intent") or {})
         top = max(float(c.final_score) for c in chunks)
-        thr = max(0.07, 0.36 * top)
+        # Precision for navigation; recall-ish for bug_fix; balanced otherwise
+        peak_mult = {"navigation": 0.44, "bug_fix": 0.31, "explain_code": 0.35, "feature_add": 0.34, "refactor": 0.34}.get(
+            leg, 0.36
+        )
+        thr = max(0.055, peak_mult * top)
         filt = [c for c in chunks if float(c.final_score) >= thr]
         if not filt:
             filt = chunks[:3]
-        return remove_redundant_chunks(filt, threshold=0.9)
+        dedupe = {"navigation": 0.93, "bug_fix": 0.86}.get(leg, 0.9)
+        return remove_redundant_chunks(filt, threshold=dedupe)
 
 
 class RankingAgent(SubAgent):
@@ -98,21 +108,26 @@ class RankingAgent(SubAgent):
         }
         w = bump.get(legacy, 0.02)
         boosts: dict[str, float] = state.get("feedback_source_boost") or {}
+        skill_nudge = float(state.get("adaptive_skill_prior_nudge") or 0.0)
         paths: list[str] = (state.get("run_memory") or {}).get("focus_paths") or []
         path_bump = 0.022
         for c in chunks:
-            fs = float(c.final_score) + w
+            fs = float(c.final_score) + w + skill_nudge
             fs += float(boosts.get(Path(c.source).name, 0.0))
             if paths:
                 cnorm = str(c.source).replace("\\", "/").lower()
                 if any(p.replace("\\", "/").lower() in cnorm or Path(p).name.lower() in cnorm for p in paths):
-                    fs += path_bump
+                    fs += path_bump + (0.014 if legacy == "navigation" else 0.0)
             terms: list[str] = (state.get("run_memory") or {}).get("focus_terms") or []
             if terms:
                 blob = (c.text + " " + c.source).lower()
                 hits = sum(1 for t in terms if t.lower() in blob)
                 if hits:
                     fs += 0.012 * min(hits, 4)
+            if legacy == "bug_fix":
+                blob2 = (c.text + c.source).lower()
+                if any(k in blob2 for k in ("raise ", "except", "traceback", "error", "assert ", "panic")):
+                    fs += 0.042
             c.final_score = fs
         return sorted(chunks, key=lambda x: x.final_score, reverse=True)
 
@@ -123,8 +138,16 @@ class VarianceAgent(SubAgent):
     name = "variance"
 
     def should_run(self, intent: dict[str, Any], state: dict[str, Any]) -> bool:
+        n = int(state.get("_chunk_count", 0))
+        leg = _legacy_intent(intent)
+        if leg == "navigation":
+            return False
+        if leg == "explain_code":
+            return n >= 5
+        if leg == "bug_fix":
+            return n >= 8
         _ = intent
-        return int(state.get("_chunk_count", 0)) >= 7
+        return n >= 7
 
     def run(self, chunks: list[Candidate], prompt: str, state: dict[str, Any]) -> list[Candidate]:
         _ = state
@@ -150,14 +173,17 @@ class FusionAgent(SubAgent):
     def should_run(self, intent: dict[str, Any], state: dict[str, Any]) -> bool:
         if state.get("skip_fusion"):
             return False
-        _ = intent
         n = int(state.get("_chunk_count", 0))
-        return 2 <= n <= 32
+        leg = _legacy_intent(intent)
+        hi = 36 if leg == "bug_fix" else 28
+        return 2 <= n <= hi
 
     def run(self, chunks: list[Candidate], prompt: str, state: dict[str, Any]) -> list[Candidate]:
-        _ = prompt, state
+        _ = prompt
         if not chunks:
             return chunks
+        leg = _legacy_intent(state.get("structured_intent") or {})
+        sim_need = 0.68 if leg == "bug_fix" else 0.72
         fused: list[Candidate] = []
         buffer: Candidate | None = None
         for c in chunks:
@@ -166,7 +192,7 @@ class FusionAgent(SubAgent):
                 continue
             same = buffer.source == c.source
             sim = jaccard_text(buffer.text, c.text)
-            if same and sim > 0.72:
+            if same and sim > sim_need:
                 buffer = _fuse_pair(buffer, c)
             else:
                 fused.append(buffer)

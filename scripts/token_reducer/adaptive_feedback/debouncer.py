@@ -114,6 +114,32 @@ def maybe_schedule_flush(workspace_root: Path | None, now_ts: float) -> bool:
     return maybe_flush_after_event(workspace_root, now_ts)
 
 
+def record_events_and_maybe_flush(
+    workspace_root: Path | None,
+    now_ts: float,
+    *,
+    event_count: int,
+    interval_minutes: int | None = None,
+    event_batch: int | None = None,
+) -> bool:
+    """Bump debouncer by ``event_count`` then promote staging when mass/time gates hit."""
+    if adaptive_disabled() or event_count <= 0:
+        return False
+    meta = load_meta(workspace_root)
+    meta.events_since_flush += event_count
+    interval = flush_interval_minutes() if interval_minutes is None else interval_minutes
+    batch = flush_event_batch() if event_batch is None else event_batch
+    if meta.last_flush_ts <= 0.0:
+        should = meta.events_since_flush >= batch
+    else:
+        elapsed_min = (now_ts - meta.last_flush_ts) / 60.0
+        should = meta.events_since_flush >= batch or elapsed_min >= float(interval)
+    if should:
+        return run_flush_pipeline(workspace_root, now_ts)
+    save_meta(workspace_root, meta)
+    return False
+
+
 def persist_staging_after_events(workspace_root: Path | None, staging: StagingState) -> None:
     """Persist scorer staging (call after applying events in memory)."""
     if adaptive_disabled():

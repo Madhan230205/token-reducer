@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import SCHEMA_VERSION, OutcomeEvent, SignalType, SourceKind
+from .state_store import adaptive_dir
 
 
 def _as_float(obj: object) -> float | None:
@@ -33,6 +34,11 @@ def default_adapt_dir() -> Path:
 
 def default_events_path() -> Path:
     return default_adapt_dir() / "adapt_events.jsonl"
+
+
+def events_path(workspace_root: Path | None) -> Path:
+    """Per-workspace JSONL next to staging/committed when ``workspace_root`` is set."""
+    return adaptive_dir(workspace_root) / "adapt_events.jsonl"
 
 
 def event_to_row(event: OutcomeEvent) -> dict[str, object]:
