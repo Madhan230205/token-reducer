@@ -1,6 +1,7 @@
 # Adaptive Workspace Feedback Loop — Design Spec
 
 **Status:** Approved for implementation planning  
+**Revision:** 2 — signal→actuator attribution, source weighting, staging vs committed state, ambiguous-signal policy, cold-start rule  
 **Date:** 2026-05-02  
 **Scope:** token-reducer — bounded, debounced **learning** from per-turn outcomes to nudge **allowlisted** pipeline knobs (skill priors, strategy prune EMA, feedback multipliers, context-intelligence-adjacent caps), without neural training or unbounded self-modification.
 
@@ -95,6 +96,12 @@ Start **small**; extend additively with version bumps.
 
 Exact mapping from raw pipeline metrics → enum is implementation-defined but **must** be documented beside code.
 
+### 4.1 Ambiguous proxies (v1 admission)
+
+Some **`local`** signals are **underdetermined**: the same enum can correspond to more than one root cause. Example: `follow_up_tightening` may reflect retrieval miss, overly broad compression output, or routing mismatch.
+
+**Normative rule:** ambiguous signals **may** influence **more than one** actuator family **only** where Section 6’s attribution map explicitly allows it, and **each** such influence **must** use **conservative** caps (smaller per-family delta ceilings than unambiguous signals). Implementation **must** document which signal types are classified ambiguous for v1.
+
 ---
 
 ## 5. Cohort keys and scoring
@@ -109,6 +116,28 @@ Exact mapping from raw pipeline metrics → enum is implementation-defined but *
 - **EMA half-life** and **min samples before actuation** are required constants (implementation plan proposes defaults; must be tunable via env).
 - **Decay:** stale cohorts lose influence automatically.
 
+### 5.1 Source confidence weighting
+
+Plugin-local (**A**) signals are **noisier** than hook (**B**) signals. Scoring **must not** treat them as equal fidelity.
+
+**Normative defaults** (effective contribution = base update × `source_weight`, applied before caps):
+
+| `source` | `source_weight` |
+|----------|-----------------|
+| `local` | **`1.0`** |
+| `hook` | **`1.5`–`2.0`** (pick a single default in band; **must** remain configurable and **hard-clamped** to a documented max to prevent runaway hook dominance) |
+
+Weights apply to **EMA increments**, not to stored raw events (events remain auditable as-ingested).
+
+### 5.2 Cold-start behavior
+
+Before the cohort (or workspace-global bootstrap bucket, if used) reaches **`min_samples`** for actuation:
+
+- The pipeline **must** behave as under **static defaults** — **no** learned bias from partial scores.
+- Staging EMA **may** accumulate internally, but **committed** actuator state exposed to the pipeline **must** remain at defaults until thresholds pass **and** a flush promotes staging (Section 7).
+
+This rule **must** be test-visible (deterministic “no drift before threshold”).
+
 ---
 
 ## 6. Actuators (allowlist)
@@ -121,6 +150,27 @@ Only the following families may change from learned updates:
 4. **Context intelligence compatibility** — any nudge that overlaps context intelligence **must clamp** to documented bounds (strategy nudge caps, retry policy constraints, ranking precedence).
 
 **Forbidden:** mutating raw tier classification rules, embedding model choice, or bypassing proof-harness disable flags.
+
+### 6.1 Signal-to-actuator attribution (normative)
+
+Updates **must not** be diffuse: **`signal_type` → restricted actuator subsets**.
+
+- Each **`signal_type`** in Section 4 **must** map to an explicit **allowlist of actuator families** (possibly empty for meta signals).
+- The **`Scorer` / `ActuatorApplier`** **must** apply a signal only to families in that signal’s row; **no** blanket “cohort-wide smear” across all families unless the attribution table explicitly lists multiple targets **and** Section 4.1 conservative caps apply.
+
+**Illustrative v1 mapping** (implementation **must** ship this table beside code; rows may split further but **must not** widen without spec bump):
+
+| `signal_type` | Actuator families (subset of Section 6 list) |
+|---------------|-----------------------------------------------|
+| `retrieval_hit_strong` | (3) feedback multipliers — retrieval scale / relevance floor |
+| `retrieval_miss_weak_pool` | (3) feedback multipliers; (2) strategy prune — **only** if prune semantics tie to weak-pool detection |
+| `compression_adequate` | (3) feedback multipliers affecting compression path if distinct knobs exist; else no-op beyond decay |
+| `session_flow_smooth` | decay / slight positive bias on (1) skill priors **only** when TOOL-tier selection participated |
+| `follow_up_tightening` | (3) + (2) + (1) **only** as allowed by Section 4.1 **conservative** multi-family caps |
+| `hook_tool_failure` | (1) skill priors; (3) optional retrieval floor nudge **if** hook metadata ties failure class |
+| `baseline_tick` | none (decay driver only) |
+
+If a new signal is added, its attribution row is **blocking** for merge.
 
 ---
 
@@ -138,10 +188,15 @@ Only the following families may change from learned updates:
 
 **Mechanics**
 
-- **Non-blocking:** scoring may occur inline; **disk commit** happens only on flush.
-- **Atomic write:** temp file + rename; maintain **last-known-good** snapshot.
-- **Crash recovery:** partial files rejected at startup; restore snapshot or defaults.
-- **Benchmark / CI guard:** when benchmark disable env is set (same family as proof harness `TOKEN_REDUCER_BENCHMARK_*` or dedicated `TOKEN_REDUCER_ADAPT_DISABLE=1`), **no actuator writes** and optionally **no event append** (implementation chooses one level of disable; document clearly).
+- **Non-blocking:** ingestion + **staging** scoring may occur inline; **promotion** to pipeline-visible state happens only on flush.
+- **Staging vs committed (normative):**
+  - **Staging** holds continuously updated EMA-derived **candidate** actuator payload (in-memory and/or durable scratch — implementation chooses).
+  - **Committed** is the **only** state the live pipeline reads for learned knobs.
+  - **Flush** atomically **promotes** validated staging → committed (temp + rename), then refreshes **last-known-good** from the new committed snapshot.
+  - Mid-session: pipeline **never** reads partial staging; avoids flicker, partial learning leaks, and difficult-to-reproduce behavior when flush boundaries align with user turns.
+- **Atomic write:** temp file + rename; maintain **last-known-good** snapshot of **committed** state.
+- **Crash recovery:** partial files rejected at startup; restore **committed** last-known-good or defaults; staging may be discarded if corrupt.
+- **Benchmark / CI guard:** when benchmark disable env is set (same family as proof harness `TOKEN_REDUCER_BENCHMARK_*` or dedicated `TOKEN_REDUCER_ADAPT_DISABLE=1`), **no promotion to committed**, **no committed actuator writes**, and optionally **no event append** (implementation chooses one level of disable; document clearly).
 
 ---
 
@@ -150,9 +205,9 @@ Only the following families may change from learned updates:
 | Guard | Requirement |
 |-------|-------------|
 | Max delta per knob per day | Hard cap per actuator family |
-| Min cohort samples | No write until threshold met |
-| Anomaly detection | Sudden multi-sigma swing → revert last flush |
-| Harness regression | If proof-harness **required** baseline exists and shows regression on cohort overlap, **rollback** last actuator snapshot |
+| Min cohort samples | No **promotion** to committed until threshold met (Section 5.2) |
+| Anomaly detection | Sudden multi-sigma swing → revert last **promotion** (restore prior **committed** snapshot; reset staging from that baseline) |
+| Harness regression | If proof-harness **required** baseline exists and shows regression on cohort overlap, **rollback** last **committed** actuator snapshot (staging discarded or realigned to committed) |
 
 ---
 
@@ -162,19 +217,22 @@ Only the following families may change from learned updates:
 |------|----------------|
 | `SignalCollector` | Normalize pipeline + optional hook payloads → events |
 | `EventLog` | Append-only store with rotation cap |
-| `Scorer` | EMA updates per cohort |
-| `ActuatorApplier` | Translate net scores → bounded deltas on allowlist |
+| `AttributionTable` | Maps `signal_type` → allowed actuator families (+ ambiguous/conservative flags) |
+| `Scorer` | Weighted EMA updates per cohort **into staging only** |
+| `ActuatorApplier` | Translate staged net scores → bounded deltas per allowed family |
+| `StateStore` | Holds **staging** vs **committed** snapshots; promotion on flush |
 | `Debouncer` | Time + mass flush scheduler (per workspace) |
-| `Guardrails` | Clamps vs context intelligence + daily caps |
+| `Guardrails` | Clamps vs context intelligence + daily caps; gates promotion |
 
 ---
 
 ## 10. Testing strategy
 
-- Unit: EMA decay, debouncer ordering, enum mapping purity, redaction.
-- Property-style: proposed deltas never exceed configured caps.
-- Integration: synthetic event stream → expect deterministic actuator file content.
-- Regression: with `ADAPT_DISABLE`, filesystem state unchanged across runs.
+- Unit: EMA decay, **source_weight** clamping, debouncer ordering, enum mapping purity, redaction.
+- Attribution: every `signal_type` has exactly one table row; illegal targets rejected at test time.
+- Property-style: proposed deltas never exceed configured caps; staging mutations never visible without flush.
+- Integration: synthetic event stream → staged progression → flush → **committed** file content deterministic.
+- Regression: with `ADAPT_DISABLE`, filesystem state unchanged across runs; cold-start — no committed drift before `min_samples`.
 
 ---
 
@@ -184,6 +242,11 @@ Only the following families may change from learned updates:
 |-------|--------|
 | Plugin-local required path | Always-on learning possible |
 | Hooks optional | Enrichment only |
+| Source weighting | `local` 1.0; `hook` 1.5–2.0 clamped |
+| Signal→actuator attribution | Explicit table; no stray diffusion |
+| Staging vs committed | Pipeline reads committed only; flush promotes |
+| Ambiguous signals | Multi-family only with conservative caps |
+| Cold-start | Defaults until `min_samples`; no committed bias |
 | Debounced writes | `T=10`, `M=25` defaults |
 | Allowlist only | No tier/prompt mutation |
 | Intel / harness compatibility | Clamps + CI disable |
