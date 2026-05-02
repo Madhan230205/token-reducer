@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import replace
 from pathlib import Path
@@ -98,10 +99,8 @@ def analyze_failure(
         m2 = _RE_BAD_PY.search(blob)
         if m2:
             file_guess = file_guess or str(Path(m2.group(1)).expanduser().resolve())
-            try:
+            with contextlib.suppress(ValueError):
                 line_guess = int(m2.group(2))
-            except ValueError:
-                pass
 
     low = blob.lower()
     if "syntaxerror" in low or "invalid syntax" in low or "unexpected eof" in low:
@@ -241,9 +240,7 @@ def _failure_actionable(failure_info: dict[str, Any], err_blob: str) -> bool:
     if failure_info.get("error_type") == "unknown" and not failure_info.get("file"):
         return False
     # Non-actionable noise
-    if "no diff blocks" in err_blob.lower():
-        return False
-    return True
+    return "no diff blocks" not in err_blob.lower()
 
 
 def _read_file_window(path: Path, line: int | None, half_lines: int) -> str:
@@ -283,10 +280,8 @@ def _surgical_candidates(
 
     paths: list[Path] = []
     if fp:
-        try:
+        with contextlib.suppress(OSError):
             paths.append(Path(str(fp)).resolve())
-        except OSError:
-            pass
     for f in focus:
         try:
             p = Path(str(f)).resolve()
@@ -663,7 +658,7 @@ def run_closed_edit_loop(
             finfo,
             query_eff,
         )
-        ctx_preview = "\n".join((c.text[:400] for c in selected_eff[:2]))
+        ctx_preview = "\n".join(c.text[:400] for c in selected_eff[:2])
         step["surgical_context_preview"] = ctx_preview
         n_files = len({c.source for c in selected_eff})
         n_lines = sum(len(c.text.splitlines()) for c in selected_eff)
