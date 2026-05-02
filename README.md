@@ -154,6 +154,13 @@ python scripts/context_pipeline.py run \
 
 ## Documentation
 
+### Showcase (decision traces & proof)
+
+- [Why Token Reducer is different](docs/WHY_TOKEN_REDUCER.md) — one-page positioning  
+- [Decision trace — JSON, UX, spine map](docs/showcase/decision-trace-star.md)  
+- [Pipeline walkthrough](docs/showcase/pipeline-walkthrough.md) — Input → … → Output  
+- [Benchmark proof snapshot](docs/showcase/benchmark-proof.md) — ties to [BENCHMARK.md](BENCHMARK.md)
+
 ### How It Works
 
 ```
