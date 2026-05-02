@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/userprompt_guard.py",
-            "timeout": 10
+            "timeout": 12
           }
         ]
       }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 from .chunker import estimate_tokens, is_code_file, tokenize
 from .config import get_weight
@@ -208,6 +209,83 @@ def extract_code_signatures(text: str) -> list[str]:
     return results
 
 
+def extract_invariant_snippets(text: str) -> list[str]:
+    """High-signal code lines: errors, assertions, public exports (cheap heuristics)."""
+    out: list[str] = []
+    for line in text.splitlines():
+        t = line.strip()
+        if not t or t.startswith("#") or t.startswith("//"):
+            continue
+        if re.match(r"^(raise|except|assert)\b", t) or re.match(r"^export\s+(default\s+)?", t) or re.match(r"^(public|private|protected)\s+", t):
+            out.append(t[:240])
+        if len(out) >= 12:
+            break
+    return out
+
+
+def extract_test_assert_lines(text: str, *, cap: int = 6) -> list[str]:
+    """Test-style assertions and expectations (strict invariant mode)."""
+    out: list[str] = []
+    for line in text.splitlines():
+        t = line.strip()
+        if not t or t.startswith("#"):
+            continue
+        if t.startswith("assert ") or " expect(" in t or ".toEqual(" in t or "assertRaises" in t:
+            out.append(t[:240])
+        if len(out) >= cap:
+            break
+    return out
+
+
+def extract_config_constant_lines(text: str, *, cap: int = 5) -> list[str]:
+    """Env keys and obvious config assignments."""
+    out: list[str] = []
+    for line in text.splitlines():
+        t = line.strip()
+        if not t or t.startswith("#"):
+            continue
+        if "os.environ" in t or "getenv(" in t or re.match(r"^[A-Z][A-Z0-9_]{1,40}\s*=", t):
+            out.append(t[:240])
+        if len(out) >= cap:
+            break
+    return out
+
+
+_ERROR_LOG_LINE_RE = re.compile(
+    r"(logger\.(error|warning|exception|critical)|\bERROR\b|\bWARN\b|traceback|raise\s+\w+)",
+    re.I,
+)
+
+
+def extract_error_log_lines(text: str, *, cap: int = 8) -> list[str]:
+    """Logging and hard-failure lines (keep for debug / invariant compression)."""
+    out: list[str] = []
+    for line in text.splitlines():
+        t = line.strip()
+        if not t:
+            continue
+        if _ERROR_LOG_LINE_RE.search(t):
+            out.append(t[:240])
+        if len(out) >= cap:
+            break
+    return out
+
+
+def lines_touching_tokens(text: str, tokens: frozenset[str], *, cap: int = 3) -> list[str]:
+    """Lines that mention query identifiers (must-keep hints)."""
+    if not tokens:
+        return []
+    out: list[str] = []
+    for line in text.splitlines():
+        if any(tok in line for tok in tokens):
+            st = line.strip()
+            if st:
+                out.append(st[:220])
+            if len(out) >= cap:
+                break
+    return out
+
+
 def merge_adjacent_candidates(candidates: list[Candidate]) -> list[Candidate]:
     """Merge candidates with adjacent chunk indices from the same source to eliminate overlap."""
     if len(candidates) <= 1:
@@ -259,11 +337,93 @@ def _merge_run(run: list[Candidate]) -> Candidate:
     )
 
 
+def _jaccard_tokens(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    union = len(a | b)
+    return inter / float(union) if union else 0.0
+
+
+def importance_rank_indices(candidates: list[Candidate], query: str, *, intent_weight: float = 1.0) -> list[int]:
+    """Descending order of chunk importance (similarity × intent weight proxy)."""
+    qt = set(tokenize(query))
+    scored: list[tuple[float, int]] = []
+    for i, c in enumerate(candidates):
+        ct = set(tokenize(c.text))
+        sim = len(qt & ct) / float(len(qt)) if qt else 0.0
+        scored.append((float(c.final_score) * max(0.5, min(1.35, intent_weight)) + sim * 0.25, i))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [i for _, i in scored]
+
+
+def remove_redundant_chunks(
+    candidates: list[Candidate],
+    *,
+    threshold: float = 0.9,
+) -> list[Candidate]:
+    """Drop near-duplicate chunks using token-set Jaccard (cheap proxy for cosine)."""
+    if len(candidates) <= 1:
+        return candidates
+    ordered = sorted(candidates, key=lambda c: c.final_score, reverse=True)
+    kept: list[Candidate] = []
+    tok_sets: list[set[str]] = []
+    for c in ordered:
+        t = set(tokenize(c.text))
+        if any(_jaccard_tokens(t, prev) >= threshold for prev in tok_sets):
+            continue
+        kept.append(c)
+        tok_sets.append(t)
+    return kept
+
+
+def compress_context(
+    chunks: list[Candidate],
+    token_budget: int,
+    query: str,
+    *,
+    relevance_floor: float = 0.15,
+    code_invariant_level: str = "off",
+    must_keep_tokens: frozenset[str] | None = None,
+    policy_word_budget: int | None = None,
+    compression_level: str = "medium",
+) -> list[str]:
+    """Token-budget-aware compression: importance ordering, redundancy trim, then knapsack bullets.
+
+    ``policy_word_budget`` caps verbosity from execution policy; ``token_budget`` comes from
+    structured intent and is converted with the same heuristic as :func:`estimate_tokens`.
+    """
+    if not chunks:
+        return []
+    level_w = {"high": 0.92, "medium": 1.0, "low": 1.08}.get(compression_level, 1.0)
+    tb = max(120, int(token_budget * level_w))
+    words_from_tokens = max(48, int(tb / 1.3))
+    word_budget = words_from_tokens
+    if policy_word_budget is not None:
+        word_budget = max(48, min(int(policy_word_budget), words_from_tokens))
+
+    intent_w = {"high": 1.12, "medium": 1.0, "low": 0.9}.get(compression_level, 1.0)
+    order = importance_rank_indices(chunks, query, intent_weight=intent_w)
+    ordered = [chunks[i] for i in order]
+    pruned = remove_redundant_chunks(ordered, threshold=0.9)
+    return compress_candidates(
+        query,
+        pruned,
+        word_budget,
+        relevance_floor=relevance_floor,
+        code_invariant_level=code_invariant_level,
+        must_keep_tokens=must_keep_tokens,
+    )
+
+
 def compress_candidates(
     query: str,
     candidates: list[Candidate],
     word_budget: int,
     relevance_floor: float = 0.15,
+    *,
+    code_invariant_level: str = "off",
+    must_keep_tokens: frozenset[str] | None = None,
 ) -> list[str]:
     """Compress candidate chunks into citation-rich summary bullets.
 
@@ -273,6 +433,8 @@ def compress_candidates(
         word_budget: Maximum words in compressed output.
         relevance_floor: Minimum final_score threshold. Chunks below this
             score are rejected to preserve context purity and API costs.
+        code_invariant_level: ``off`` | ``standard`` | ``strict`` — controls code preservation.
+        must_keep_tokens: Query-derived identifiers; lines mentioning them are favored.
     """
     # Merge adjacent chunks before compression to eliminate overlap redundancy
     candidates = merge_adjacent_candidates(candidates)
@@ -295,13 +457,27 @@ def compress_candidates(
         if source_is_code:
             # For code: extract signatures and docstrings instead of sentence splitting
             snippets = extract_code_signatures(candidate.text)
+            if code_invariant_level != "off":
+                inv = extract_invariant_snippets(candidate.text)
+                inv.extend(extract_error_log_lines(candidate.text))
+                if code_invariant_level == "standard":
+                    inv = inv[:10]
+                snippets = list(dict.fromkeys([*inv, *snippets]))
+                if code_invariant_level == "strict":
+                    snippets.extend(extract_test_assert_lines(candidate.text))
+                    snippets.extend(extract_config_constant_lines(candidate.text))
+                    snippets = list(dict.fromkeys(snippets))
+            if must_keep_tokens:
+                snippets.extend(lines_touching_tokens(candidate.text, must_keep_tokens))
+                snippets = list(dict.fromkeys(snippets))
             if not snippets:
                 # Fallback: use first N lines preserving code structure
                 code_lines = [line for line in candidate.text.splitlines() if line.strip()]
                 snippets = code_lines[:5] if code_lines else []
             if not snippets:
                 continue
-            summary = " | ".join(snippets[:4]).strip()
+            max_parts = 10 if code_invariant_level == "strict" else 6
+            summary = " | ".join(snippets[:max_parts]).strip()
         else:
             # For prose: TextRank-based sentence scoring for intelligent summarization
             sentences = split_sentences(candidate.text)
@@ -381,6 +557,14 @@ def build_packet(
     omitted_redundant: list[OmittedRedundantEntry] | None = None,
     active_context_signature: str = "",
     claude_context: dict | None = None,
+    *,
+    task_mode: str | None = None,
+    patch_first: bool = False,
+    verification_plan: dict[str, Any] | None = None,
+    agent_result: dict[str, Any] | None = None,
+    focus_line: str = "",
+    agent_trace: list[dict[str, Any]] | None = None,
+    chunk_transparency: list[dict[str, Any]] | None = None,
 ) -> ContextPacket:
     source_count = len({c.source for c in selected})
     candidate_pool_tokens = sum(c.token_estimate for c in candidate_pool)
@@ -399,14 +583,20 @@ def build_packet(
     lines: list[str] = [
         "CONTEXT_PACKET_START",
         f"query: {query}",
-        f"selected_chunks: {len(selected)}",
-        f"sources: {source_count}",
-        f"retrieval_mode: {retrieval_mode}",
-        f"hybrid_mode: {hybrid_mode}",
-        "fts_ranking: bm25",
-        f"vector_backend_used: {vector_backend_used}",
-        f"vector_retrieval_path: {vector_retrieval_path}",
     ]
+    if focus_line:
+        lines.append(f"focus: {focus_line}")
+    lines.extend(
+        [
+            f"selected_chunks: {len(selected)}",
+            f"sources: {source_count}",
+            f"retrieval_mode: {retrieval_mode}",
+            f"hybrid_mode: {hybrid_mode}",
+            "fts_ranking: bm25",
+            f"vector_backend_used: {vector_backend_used}",
+            f"vector_retrieval_path: {vector_retrieval_path}",
+        ]
+    )
     if vector_model_used:
         lines.append(f"vector_model_used: {vector_model_used}")
     lines.extend(
@@ -433,6 +623,14 @@ def build_packet(
         lines.append("referenced_definitions:")
         for item in ref_syms:
             lines.append(json.dumps(item, ensure_ascii=False))
+    if task_mode:
+        lines.append(f"task_mode: {task_mode}")
+    if patch_first:
+        lines.append("preferred_output: minimal_patch_search_replace")
+    if verification_plan:
+        lines.append(f"verification_plan: {json.dumps(verification_plan, ensure_ascii=False)}")
+    if agent_result:
+        lines.append(f"agent_result: {json.dumps(agent_result, ensure_ascii=False)}")
     lines.extend(["", "CONTEXT_PACKET_END"])
 
     retrieval = RetrievalInfo(
@@ -473,6 +671,9 @@ def build_packet(
         for c in selected
     ]
 
+    trace = list(agent_trace or [])
+    trans = list(chunk_transparency or [])
+
     return ContextPacket(
         query=query,
         selected_chunks=len(selected),
@@ -487,4 +688,11 @@ def build_packet(
         active_context_signature=active_context_signature,
         referenced_symbols=ref_syms,
         claude_context=claude_context,
+        task_mode=task_mode,
+        patch_first=patch_first,
+        verification_plan=verification_plan,
+        agent_result=agent_result,
+        focus_line=focus_line,
+        agent_trace=trace,
+        chunk_transparency=trans,
     )

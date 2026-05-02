@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from token_reducer.intent import analyze_query_intent
+from token_reducer.intent import analyze_query_intent, detect_intent, structured_intent_to_dict
 
 
 def test_bug_fix_intent() -> None:
@@ -17,3 +17,9 @@ def test_navigation_intent() -> None:
 
 def test_feature_intent() -> None:
     assert analyze_query_intent("Add new API endpoint for export") == "feature_add"
+
+
+def test_detect_intent_aligns_legacy() -> None:
+    si = detect_intent("Where is user_service.py")
+    assert si["legacy_intent"] == "navigation"
+    assert structured_intent_to_dict(si)["type"] == "code"

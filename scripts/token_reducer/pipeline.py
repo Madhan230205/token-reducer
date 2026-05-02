@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -21,13 +22,12 @@ from .delta_context import (
     fingerprint_dict_for_chunk,
     persist_delivered_fingerprints,
 )
+from .feedback import log_result, persist_workspace_prune_ema, strategy_prune_deltas_from_feedback_log
 from .intent import analyze_query_intent
+from .context_pipeline import process_prompt
 from .models import CacheInfo, ContextPacket, SessionMemory, hash_text, utc_now_epoch
-from .orchestrator import (
-    ContextPipelineOrchestrator,
-    ContextRunState,
-    build_packet_from_state,
-)
+from .orchestrator import ContextRunState, build_packet_from_state
+from .patch_loop import run_closed_edit_loop
 from .plugin_settings import get_runtime_defaults
 
 
@@ -65,6 +65,8 @@ def run_retrieval_pipeline(
     word_budget: int,
     relevance_floor: float = DEFAULT_RELEVANCE_FLOOR,
     workspace_root: Path | None = None,
+    closed_edit_loop: bool = False,
+    agent_apply_patches: bool = False,
 ) -> ContextPacket:
     runtime = get_runtime_defaults()
     intent = analyze_query_intent(query)
@@ -100,6 +102,8 @@ def run_retrieval_pipeline(
                 )
             ),
             "intent": intent,
+            "closed_edit_loop": closed_edit_loop,
+            "agent_apply_patches": agent_apply_patches,
         },
         sort_keys=True,
     )
@@ -134,7 +138,7 @@ def run_retrieval_pipeline(
             cached_packet.cache.ttl_seconds = query_cache_ttl_seconds
         return cached_packet
 
-    # Cache miss: explicit orchestration (retrieval → merge → scoring → selection → expansion → compression → packaging).
+    # Cache miss: single execution entry — process_prompt (intent → retrieve → … → compress).
     state = ContextRunState(
         conn=conn,
         db_path=db_path,
@@ -155,13 +159,49 @@ def run_retrieval_pipeline(
         relevance_floor=relevance_floor,
         workspace_root=workspace_root,
     )
-    ContextPipelineOrchestrator(state).run_through_compression()
+    process_prompt(
+        query,
+        {"context_run_state": state},
+        debug=bool(os.environ.get("TOKEN_REDUCER_PIPELINE_DEBUG")),
+    )
+    if (
+        closed_edit_loop
+        and workspace_root is not None
+        and state.policy
+        and state.policy.patch_first
+    ):
+        run_closed_edit_loop(
+            state,
+            workspace_root=workspace_root,
+            dry_run=not agent_apply_patches,
+        )
     packet = build_packet_from_state(
         state,
         retrieval_mode=retrieval_mode,
         hybrid_mode=hybrid_mode,
         active_sig=active_sig,
     )
+
+    if os.environ.get("TOKEN_REDUCER_FEEDBACK"):
+        log_result(
+            query,
+            packet.packet,
+            extra={
+                "chunks_selected": len(state.selected),
+                "intent": state.intent,
+                "selected_sources": [c.source for c in state.selected],
+                "strategy_id": (getattr(state, "context_strategy", None) or {}).get("strategy_id"),
+                "chunk_trace": [
+                    {"chunk_id": int(c.chunk_id), "final_score": round(float(c.final_score), 5)}
+                    for c in state.selected
+                ],
+            },
+        )
+        if workspace_root is not None:
+            persist_workspace_prune_ema(
+                workspace_root,
+                strategy_prune_deltas_from_feedback_log(),
+            )
 
     updated_memory = update_session_memory(
         memory_path=memory_path,

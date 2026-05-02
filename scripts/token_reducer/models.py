@@ -4,7 +4,7 @@ import re
 from datetime import UTC, datetime
 from hashlib import blake2b
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -177,6 +177,13 @@ class ContextPacket(BaseModel):
     active_context_signature: str = ""
     referenced_symbols: list[dict] = Field(default_factory=list)
     claude_context: dict | None = None
+    task_mode: str | None = None
+    patch_first: bool = False
+    verification_plan: dict[str, Any] | None = None
+    agent_result: dict[str, Any] | None = None
+    focus_line: str = ""
+    agent_trace: list[dict[str, Any]] = Field(default_factory=list)
+    chunk_transparency: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class Symbol(BaseModel):

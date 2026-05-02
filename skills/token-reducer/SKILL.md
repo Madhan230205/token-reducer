@@ -13,6 +13,10 @@ metadata:
 
 Cut context size without cutting answer quality.
 
+## Adaptive context (invisible to the user)
+
+The pipeline maps each **query + intent + corpus tier** to a **context strategy** (merge depth, prune width, whether to run fusion/neighborhood, and a single **attention frame** for the model). That is **not** a fixed “always N chunks” shape: short or conversational prompts get a lighter path; bug-fix and navigation prompts bias retrieval and framing without exposing internal stage names. The goal is better answers with less noise — the user should notice sharper reasoning, not a separate “reducer” gadget.
+
 ## Why token use still spikes
 
 Claude Code often answers code questions with native **Read** / **Grep** on whole files, which loads raw text into the model and **bypasses** this pipeline. Long **chat history** is re-sent every turn, so costs compound even when code is compressed.

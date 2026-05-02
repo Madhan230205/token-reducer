@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Backward-compatible entry point. Logic lives in token_reducer package."""
+"""CLI entry point for token-reducer (``python scripts/context_pipeline.py …``).
+
+The dominant retrieval pipeline lives in ``token_reducer.context_pipeline`` and
+``token_reducer.orchestrator`` (intent → retrieve → rerank → compress → expand).
+This file forwards to :mod:`token_reducer.cli` for backward compatibility.
+"""
 
 import os
 import sys

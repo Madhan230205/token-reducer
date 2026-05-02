@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "claude-token-reducer"
-version = "1.4.0"
+version = "1.5.0"
 description = "Open-source local-first context compression and token reduction pipeline for Claude Code with hybrid retrieval (BM25 + vectors), reranking, and AST-aware chunking."
 keywords = [
     "claude-code",

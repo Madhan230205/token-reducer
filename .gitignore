@@ -2,6 +2,15 @@
 .cache/
 __pycache__/
 *.pyc
+.token-reducer/
 
 # Rust / maturin build output
 /target/
+
+# Local indexes / embeddings (clone-friendly)
+*.db
+*.sqlite
+*.sqlite3
+*.hnsw.bin
+*.hnsw.meta.json
+*.faiss

@@ -379,12 +379,22 @@ def rerank_candidates(
     fts_hits: list[Candidate],
     vector_hits: list[Candidate],
     top_k: int,
+    *,
+    strategy: str = "default",
 ) -> tuple[list[Candidate], list[Candidate]]:
     from .config import should_use_rrf
 
     # Use RRF if enabled, otherwise fall back to weighted scoring
     if should_use_rrf() and vector_hits:
         ranked = reciprocal_rank_fusion(fts_hits, vector_hits)
+        if strategy == "overlap_heavy":
+            for c in ranked:
+                c.final_score = float(c.final_score) + 0.12 * overlap_ratio(query, c.text)
+            ranked.sort(key=lambda c: c.final_score, reverse=True)
+        elif strategy == "balanced_hybrid":
+            for c in ranked:
+                c.final_score = float(c.final_score) + 0.04 * overlap_ratio(query, c.text)
+            ranked.sort(key=lambda c: c.final_score, reverse=True)
         return ranked[:top_k], ranked
 
     # Fallback: Original weighted scoring
@@ -407,6 +417,25 @@ def rerank_candidates(
     final_fts_w = get_weight("final_fts_weight")
     final_vector_w = get_weight("final_vector_weight")
     final_overlap_w = get_weight("final_overlap_weight")
+
+    if strategy == "lexical_heavy":
+        fts_lexical_w *= 1.22
+        fts_bm25_w *= 1.12
+        final_fts_w *= 1.18
+        final_vector_w *= 0.82
+    elif strategy == "overlap_heavy":
+        final_overlap_w *= 1.58
+        final_fts_w *= 1.1
+        if vector_hits:
+            final_vector_w *= 0.88
+    elif strategy == "balanced_hybrid" and vector_hits:
+        final_vector_w *= 1.12
+        final_fts_w *= 1.08
+        final_overlap_w *= 1.12
+    elif strategy == "semantic_heavy" and vector_hits:
+        final_vector_w *= 1.45
+        final_overlap_w *= 1.02
+        final_fts_w *= 0.75
 
     ranked = list(merged.values())
     for item in ranked:

@@ -15,20 +15,26 @@ def build_claude_plugin_payload(
     query: str,
     intent: IntentType,
     candidates: list[Candidate],
+    *,
+    patch_first: bool = False,
+    context_strategy: dict[str, object] | None = None,
 ) -> dict[str, object]:
     summary, relationships = summarize_context(query, intent, candidates)
     files = sorted({c.source for c in candidates})
     code_context: list[dict[str, object]] = []
-    seen: set[tuple[str, str]] = set()
+    # Dedupe by chunk identity only. (file, symbol_name) was wrong: infer_chunk_meta
+    # falls back to Path(source).stem for non-symbol-leading chunks, so multiple
+    # prose/config segments from one file collapsed to a single entry.
+    seen_chunk_ids: set[int] = set()
     for c in candidates:
-        meta = infer_chunk_meta(c.text, c.source)
-        key = (c.source, str(meta.get("symbol_name", "")))
-        if key in seen:
+        if c.chunk_id in seen_chunk_ids:
             continue
-        seen.add(key)
+        seen_chunk_ids.add(c.chunk_id)
+        meta = infer_chunk_meta(c.text, c.source)
         code = denoise_code_for_plugin(c.text, query)
-        if len(code) > 12000:
-            code = code[:12000] + "\n…"
+        max_code = 5200 if patch_first else 12000
+        if len(code) > max_code:
+            code = code[:max_code] + "\n…"
         code_context.append(
             {
                 "file": c.source,
@@ -40,13 +46,24 @@ def build_claude_plugin_payload(
                 "why_relevant": why_relevant(c, query, intent),
             }
         )
-    return {
+    if context_strategy:
+        af = context_strategy.get("attention_frame")
+        if isinstance(af, str) and (t := af.strip()):
+            # Fold framing into the narrative summary — no extra top-level keys.
+            summary = f"{t}\n\n{summary}" if summary else t
+    payload: dict[str, object] = {
         "intent": intent,
         "summary": summary,
         "relevant_files": files,
         "relationships": relationships,
         "code_context": code_context,
     }
+    if patch_first:
+        payload["edit_guidance"] = (
+            "Plan edits before writing code; prefer SEARCH/REPLACE or small targeted hunks; "
+            "keep signatures and public exports intact."
+        )
+    return payload
 
 
 def plugin_json_dumps(payload: dict[str, object]) -> str:

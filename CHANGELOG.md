@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.5.0 - 2026-05-02
+
+### Added — Adaptive context, agents, transparency, learning hooks
+
+- **Query → context strategy** (`context_strategy.py`): maps intent, query shape, retrieval tier, and vector use to `merge_cap`, `prune_k`, optional skips for fusion/neighborhood, and an internal **attention frame** (editorial line folded into the plugin summary, not exposed as pipeline jargon).
+- **Orchestrator integration**: strategy is chosen after retrieval; merge stage and subagents respect caps/skips; Claude plugin payload keeps framing **inside `summary`** (no `attention_frame` / `context_shape` keys).
+- **Subagent layer** (`subagents/`): deterministic **coordinator** (`run_memory`: decomposition steps, `focus_paths`, `focus_terms`), **merge_streams** (path stream + term stream + remainder interleaved), **filter**, **ranking** (path/term boosts + feedback boosts), **variance** (deterministic mid-list nudge from underrepresented files), **fusion**, **budget**.
+- **Coordination** (`coordination.py`): path/term extraction, task decomposition strings, `merge_subtask_streams`, `diversify_chunk_order`.
+- **Feedback & adaptation** (`feedback.py`): JSONL logging; `read_strategy_prune_adjustments` from recent logs; optional **workspace EMA** at `<workspace>/.token-reducer/prune_ema.json` (updated when `TOKEN_REDUCER_FEEDBACK` is set); orchestrator blends log + EMA into `prune_k` nudge.
+- **Pipeline logging**: `extra.strategy_id` and **`chunk_trace`** (`chunk_id`, `final_score`) for future ranking / analytics.
+- **User-facing packet copy** (`context_explain.py`): **`focus_line`** (“kept N excerpts from these files for your {intent}…”), **`agent_trace`** (intent → retrieval → strategy → context_agents → compress → validate), **`chunk_transparency`** (per-chunk signal mix + scores). Wired in `build_packet_from_state`; text packet includes `focus:` after `query:`.
+- **`ContextPacket` fields**: `focus_line`, `agent_trace`, `chunk_transparency` (structured trust layer alongside existing `candidates`).
+
+### Changed
+
+- **Hooks** (`userprompt_guard.py`): softer, outcome-first system messages (less “token” / plugin jargon on success paths); hard block still actionable.
+- **`.gitignore`**: SQLite / HNSW / FAISS-style artifacts and `.token-reducer/` workspace cache dir for cleaner clones.
+- **Skill** (`skills/token-reducer/SKILL.md`): adaptive shaping and invisible framing notes.
+
+### Fixed
+
+- **`ContextPacket` / `Symbol` model**: restored correct class boundary (avoid Pydantic treating packet fields as `Symbol`).
+
+---
+
 ## 1.4.0 - 2026-04-01
 
 ### Added - LSP-Killer Architecture

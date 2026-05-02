@@ -172,9 +172,9 @@ def main() -> int:
         if not bypass and word_count > HARD_BLOCK_WORDS:
             # Hard block: reject the prompt entirely
             messages.append(
-                f"🚫 Prompt BLOCKED: {word_count} words (~{estimate_tokens(prompt)} tokens) exceeds the "
-                f"{HARD_BLOCK_WORDS}-word hard limit. Reduce your prompt size or pass large content "
-                "via --inputs and run /token-reducer instead. Prompt was not submitted."
+                f"🚫 Prompt BLOCKED: {word_count} words (~{estimate_tokens(prompt)} words of context) exceeds the "
+                f"{HARD_BLOCK_WORDS}-word hard limit. Shorten the message or attach large content as files, "
+                "then use the plugin’s context command instead. Prompt was not submitted."
             )
             result["rejectInput"] = True
             result["systemMessage"] = "\n\n".join(messages)
@@ -184,9 +184,7 @@ def main() -> int:
         if not bypass and word_count > HARD_TRUNCATE_WORDS:
             # TPCH: Zero-Turn Auto-Compression — intercept before LLM sees the prompt
             messages.append(
-                f"⚡ Auto-Compression Engaged: Intercepted {word_count} words "
-                f"(~{estimate_tokens(prompt)} tokens) before sending to the AI. "
-                "Compressing context to save tokens..."
+                f"⚡ Long message detected ({word_count} words). It was tightened automatically before reaching the model."
             )
             try:
                 pipeline_script = Path(plugin_root) / "scripts" / "context_pipeline.py"
@@ -200,7 +198,21 @@ def main() -> int:
                 compressed_packet, _ = process.communicate(input=prompt, timeout=30)
                 if process.returncode == 0 and compressed_packet.strip():
                     saved = estimate_tokens(prompt) - estimate_tokens(compressed_packet)
-                    messages.append(f"✅ Compressed: saved ~{saved} tokens on Turn 1.")
+                    messages.append(
+                        f"✅ Done — about {saved} words of repetition or filler were folded for this turn."
+                    )
+                    try:
+                        if str(plugin_root):
+                            sys.path.insert(0, str(Path(plugin_root) / "scripts"))
+                        from token_reducer.feedback import log_result
+
+                        log_result(
+                            prompt,
+                            compressed_packet,
+                            extra={"source": "userprompt_guard", "mode": "compress_subprocess"},
+                        )
+                    except Exception:
+                        pass
                     result["transformedPrompt"] = compressed_packet.strip()
                 else:
                     raise RuntimeError("compression yielded empty output")
@@ -214,32 +226,28 @@ def main() -> int:
 
         elif not bypass and (word_count > MAX_PROMPT_WORDS or line_count > MAX_PROMPT_LINES):
             messages.append(
-                "⚠️ Large raw prompt detected. This may bypass token reduction and burn tokens. "
-                "Native Read/Grep on whole files pulls raw text into the model context. "
-                "Prefer: keep the prompt short, pass paths as --inputs, then run /token-reducer (or the CLI) first. "
-                f"(approx_tokens={estimate_tokens(prompt)})"
+                "⚠️ Large raw prompt. Pasting huge blobs here often hides the signal. "
+                "Prefer a short ask plus file paths; let the workspace tools pull detail when needed. "
+                f"(Rough size: ~{estimate_tokens(prompt)} words of context.)"
             )
 
     if turns >= critical_reset_turn and turns % 10 == 0:
         messages.append(
-            f"🚨 CRITICAL: Session has reached {turns} turns. Context window is likely near capacity. "
-            "Token efficiency is severely degraded. START A NEW CHAT NOW to restore full token savings. "
-            "Run /compact first to preserve important context, then begin a fresh session."
+            f"🚨 CRITICAL: Session has reached {turns} turns. The context window is likely near capacity. "
+            "Start a new chat soon for the clearest reasoning. Run /compact first if you need to keep key threads."
         )
     elif turns >= auto_reset_turn and turns % 5 == 0:
         messages.append(
-            f"🔄 AUTO-RESET RECOMMENDED: Session has reached {turns} turns. Chat history is consuming "
-            "significant tokens and reducing the effectiveness of token-reducer. "
-            "Strongly recommended: run /compact now, then start a fresh chat session."
+            f"🔄 Session has reached {turns} turns. Long threads get noisier. "
+            "Consider /compact, then a fresh chat when you switch major tasks."
         )
     elif turns == auto_compact_turn:
         messages.append(
-            f"📦 AUTO-COMPACT SUGGESTED: You've reached {auto_compact_turn} turns. Run /compact now to compress "
-            "conversation history and reclaim context window space. This keeps token-reducer effective."
+            f"📦 Nice milestone: {auto_compact_turn} turns. Running /compact now keeps long chats feeling sharp."
         )
     elif turns in reminder_turns:
         messages.append(
-            "🧹 Session hygiene reminder: context history is growing. Run /compact at milestones and start a fresh chat when switching major tasks."
+            "🧹 Session hygiene: history is growing. /compact at milestones helps; a new chat resets clarity."
         )
 
     if messages:
