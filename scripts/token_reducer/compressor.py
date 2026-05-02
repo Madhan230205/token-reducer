@@ -7,6 +7,7 @@ from typing import Any
 
 from .chunker import estimate_tokens, is_code_file, tokenize
 from .config import get_weight
+from .model_tuning import compression_model_tuning
 from .models import (
     Candidate,
     CandidateSummary,
@@ -345,14 +346,63 @@ def _jaccard_tokens(a: set[str], b: set[str]) -> float:
     return inter / float(union) if union else 0.0
 
 
-def importance_rank_indices(candidates: list[Candidate], query: str, *, intent_weight: float = 1.0) -> list[int]:
-    """Descending order of chunk importance (similarity × intent weight proxy)."""
+_GOAL_MARKERS: dict[str, tuple[str, ...]] = {
+    "bug_fix": ("traceback", "exception", "error", "raise ", "assert ", "fail", "panic", "errno"),
+    "feature_add": ("def ", "class ", "interface ", "export ", "fn ", "impl ", "async "),
+    "explain_code": ('"""', "returns", "raises:", "example", "note:", "summary"),
+    "refactor": ("deprecated", "todo", "rename", "breaking", "compat"),
+}
+
+
+def _goal_rank_bonus(text: str, legacy_intent: str | None, query: str) -> float:
+    """Cheap lexical proxy for “what matters for this task” (no embeddings)."""
+    if not legacy_intent:
+        return 0.0
+    blob = text.lower()
+    if legacy_intent == "navigation":
+        qt = [t for t in tokenize(query) if len(t) > 3]
+        hits = sum(1 for t in qt if t in blob or t in Path(text).name.lower())
+        return min(0.12, hits * 0.026)
+    markers = _GOAL_MARKERS.get(legacy_intent, ())
+    n = sum(1 for m in markers if m.lower() in blob)
+    return min(0.14, n * 0.038)
+
+
+def _goal_relevance_floor_shift(legacy_intent: str | None) -> float:
+    """Task outcome prior on knapsack cutoff (stricter for debug-ish tasks)."""
+    if legacy_intent == "bug_fix":
+        return 0.024
+    if legacy_intent == "navigation":
+        return -0.028
+    if legacy_intent == "explain_code":
+        return -0.012
+    return 0.0
+
+
+def importance_rank_indices(
+    candidates: list[Candidate],
+    query: str,
+    *,
+    intent_weight: float = 1.0,
+    legacy_intent: str | None = None,
+    model_profile: str | None = None,
+) -> list[int]:
+    """Descending chunk importance: retrieval score + query overlap + goal hints + model tuning."""
     qt = set(tokenize(query))
+    mt = compression_model_tuning(model_profile)
     scored: list[tuple[float, int]] = []
     for i, c in enumerate(candidates):
         ct = set(tokenize(c.text))
         sim = len(qt & ct) / float(len(qt)) if qt else 0.0
-        scored.append((float(c.final_score) * max(0.5, min(1.35, intent_weight)) + sim * 0.25, i))
+        goal = _goal_rank_bonus(c.text, legacy_intent, query)
+        scored.append(
+            (
+                float(c.final_score) * max(0.5, min(1.35, intent_weight))
+                + sim * 0.25 * mt.rank_sim_scale
+                + goal,
+                i,
+            )
+        )
     scored.sort(key=lambda x: x[0], reverse=True)
     return [i for _, i in scored]
 
@@ -387,32 +437,44 @@ def compress_context(
     must_keep_tokens: frozenset[str] | None = None,
     policy_word_budget: int | None = None,
     compression_level: str = "medium",
+    legacy_intent: str | None = None,
+    model_profile: str | None = None,
 ) -> list[str]:
     """Token-budget-aware compression: importance ordering, redundancy trim, then knapsack bullets.
 
     ``policy_word_budget`` caps verbosity from execution policy; ``token_budget`` comes from
     structured intent and is converted with the same heuristic as :func:`estimate_tokens`.
+    ``legacy_intent`` / ``model_profile`` steer semantic prioritization without extra LLM calls.
     """
     if not chunks:
         return []
+    mt = compression_model_tuning(model_profile)
     level_w = {"high": 0.92, "medium": 1.0, "low": 1.08}.get(compression_level, 1.0)
-    tb = max(120, int(token_budget * level_w))
+    tb = max(120, int(token_budget * level_w * mt.budget_factor))
     words_from_tokens = max(48, int(tb / 1.3))
     word_budget = words_from_tokens
     if policy_word_budget is not None:
         word_budget = max(48, min(int(policy_word_budget), words_from_tokens))
 
     intent_w = {"high": 1.12, "medium": 1.0, "low": 0.9}.get(compression_level, 1.0)
-    order = importance_rank_indices(chunks, query, intent_weight=intent_w)
+    order = importance_rank_indices(
+        chunks,
+        query,
+        intent_weight=intent_w,
+        legacy_intent=legacy_intent,
+        model_profile=model_profile,
+    )
     ordered = [chunks[i] for i in order]
     pruned = remove_redundant_chunks(ordered, threshold=0.9)
+    eff_floor = max(0.05, min(0.48, relevance_floor + mt.relevance_floor_shift + _goal_relevance_floor_shift(legacy_intent)))
     return compress_candidates(
         query,
         pruned,
         word_budget,
-        relevance_floor=relevance_floor,
+        relevance_floor=eff_floor,
         code_invariant_level=code_invariant_level,
         must_keep_tokens=must_keep_tokens,
+        prose_query_weight_scale=mt.prose_query_weight_scale,
     )
 
 
@@ -424,6 +486,7 @@ def compress_candidates(
     *,
     code_invariant_level: str = "off",
     must_keep_tokens: frozenset[str] | None = None,
+    prose_query_weight_scale: float = 1.0,
 ) -> list[str]:
     """Compress candidate chunks into citation-rich summary bullets.
 
@@ -486,7 +549,7 @@ def compress_candidates(
 
             # Get configurable weights
             textrank_w = get_weight("textrank_weight")
-            query_relevance_w = get_weight("query_relevance_weight")
+            query_relevance_w = get_weight("query_relevance_weight") * prose_query_weight_scale
 
             # Use TextRank for semantic importance, boosted by query overlap
             textrank_scores = textrank_score_sentences(sentences)
@@ -565,6 +628,7 @@ def build_packet(
     focus_line: str = "",
     agent_trace: list[dict[str, Any]] | None = None,
     chunk_transparency: list[dict[str, Any]] | None = None,
+    audit_spine: dict[str, Any] | None = None,
 ) -> ContextPacket:
     source_count = len({c.source for c in selected})
     candidate_pool_tokens = sum(c.token_estimate for c in candidate_pool)
@@ -695,4 +759,5 @@ def build_packet(
         focus_line=focus_line,
         agent_trace=trace,
         chunk_transparency=trans,
+        audit_spine=audit_spine,
     )

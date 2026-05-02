@@ -20,6 +20,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from .audit_spine import AuditSpine
 from .chunker import function_call_positions
 from .compressor import build_packet, compress_context
 from .context_expansion import expand_context_candidates
@@ -101,6 +102,7 @@ class ContextRunState:
     routing_plan: RoutingPlan | None = None
     subagent_profile_used: str | None = None
     feedback_loop_adj: FeedbackLoopAdjustments | None = None
+    audit_spine: AuditSpine | None = None
 
     policy: ExecutionPolicy | None = None
     repo_map: RepoMap | None = None
@@ -703,6 +705,7 @@ def build_packet_from_state(
     )
     trace = build_agent_trace(state)
     trans = chunk_transparency_rows(state.selected)
+    spine_payload = state.audit_spine.to_jsonable() if state.audit_spine is not None else None
     return build_packet(
         query=state.query,
         selected=state.selected,
@@ -726,4 +729,5 @@ def build_packet_from_state(
         focus_line=focus,
         agent_trace=trace,
         chunk_transparency=trans,
+        audit_spine=spine_payload,
     )

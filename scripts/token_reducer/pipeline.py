@@ -12,6 +12,7 @@ from .adaptive_feedback.debouncer import persist_staging_after_events, record_ev
 from .adaptive_feedback.event_log import append_event, events_path
 from .adaptive_feedback.scorer import apply_event
 from .adaptive_feedback.state_store import load_staging
+from .audit_spine import apply_outcome, bootstrap_spine
 from .config import DEFAULT_RELEVANCE_FLOOR, MAX_QUERY_LINES, MAX_QUERY_WORDS
 from .context_pipeline import process_prompt
 from .db import (
@@ -187,12 +188,21 @@ def run_retrieval_pipeline(
         execution_route=route,
         routing_plan=plan,
         feedback_loop_adj=fb_adj,
+        audit_spine=bootstrap_spine(query, si, route),
     )
+    t_pipe = time.perf_counter()
     process_prompt(
         query,
         {"context_run_state": state},
         debug=bool(os.environ.get("TOKEN_REDUCER_PIPELINE_DEBUG")),
     )
+    if state.audit_spine is not None:
+        state.audit_spine = apply_outcome(
+            state.audit_spine,
+            latency_ms=int((time.perf_counter() - t_pipe) * 1000),
+            context_decision=state.context_decision,
+            disagreement=state.audit_spine.retrieval.disagreement,
+        )
     if (
         closed_edit_loop
         and workspace_root is not None

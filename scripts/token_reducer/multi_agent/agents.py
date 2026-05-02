@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from ..audit_spine import apply_compression_slice, apply_retrieval_and_routing
 from ..feedback import feedback_loop_adjustments_with_adaptive
 
 
@@ -49,6 +50,15 @@ class RetrieverAgent:
         if orch.state.retrieval_retry_done:
             orch.stage_finalize_context_intelligence()
         s = orch.state
+        if s.audit_spine is not None:
+            s.audit_spine = apply_retrieval_and_routing(
+                s.audit_spine,
+                scored_pool=s.scored_pool,
+                fts_hits=s.fts_hits,
+                vector_hits=s.vector_hits,
+                route=s.execution_route,
+                context_decision=s.context_decision,
+            )
         return {
             "fts_hits": len(s.fts_hits),
             "vector_hits": len(s.vector_hits),
@@ -84,5 +94,12 @@ class CompressorAgent:
     def run(self, orch: Any) -> dict[str, Any]:
         orch.stage_compression()
         s = orch.state
+        if s.audit_spine is not None:
+            s.audit_spine = apply_compression_slice(
+                s.audit_spine,
+                selected=s.selected,
+                omitted=s.omitted_redundant,
+                bullets=s.bullets,
+            )
         tok = sum(len(b.split()) for b in s.bullets)
         return {"bullet_count": len(s.bullets), "bullet_words_est": tok, "has_claude_context": s.claude_context is not None}

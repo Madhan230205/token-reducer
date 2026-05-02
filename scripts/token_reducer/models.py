@@ -184,6 +184,7 @@ class ContextPacket(BaseModel):
     focus_line: str = ""
     agent_trace: list[dict[str, Any]] = Field(default_factory=list)
     chunk_transparency: list[dict[str, Any]] = Field(default_factory=list)
+    audit_spine: dict[str, Any] | None = None
 
 
 class Symbol(BaseModel):
