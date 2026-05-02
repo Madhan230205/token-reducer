@@ -39,6 +39,7 @@ class RetrievalCandidate(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     doc_id: str
+    path: str
     chunk_id: str
     source: RetrievalSource
     score: float = 0.0
@@ -195,6 +196,7 @@ def scored_pool_to_candidates(scored: list[Candidate], *, top_n: int = 50) -> tu
         out.append(
             RetrievalCandidate(
                 doc_id=hash_text(str(c.source))[:24],
+                path=str(c.source),
                 chunk_id=str(c.chunk_id),
                 source=src,
                 score=float(c.final_score),

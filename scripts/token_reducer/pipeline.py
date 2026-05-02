@@ -32,6 +32,7 @@ from .delta_context import (
     persist_delivered_fingerprints,
 )
 from .execution_route import build_routing_plan, resolve_execution_route, routing_plan_to_dict
+from .explainability_render import attach_hybrid_explainability_to_context
 from .feedback import (
     feedback_loop_adjustments_with_adaptive,
     log_result,
@@ -203,6 +204,7 @@ def run_retrieval_pipeline(
             context_decision=state.context_decision,
             disagreement=state.audit_spine.retrieval.disagreement,
         )
+    attach_hybrid_explainability_to_context(state)
     if (
         closed_edit_loop
         and workspace_root is not None
