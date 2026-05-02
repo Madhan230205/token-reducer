@@ -1,0 +1,12 @@
+{
+  "scenario_id": "smoke_jwt_micro",
+  "tier": "smoke",
+  "fixture_id": "micro_py",
+  "query": "jwt validation",
+  "env": {
+    "infer_retrieval_tier": "fts_only"
+  },
+  "expected_paths": ["svc.py"],
+  "required": true,
+  "tags": ["retrieval"]
+}

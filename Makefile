@@ -1,4 +1,4 @@
-.PHONY: test lint format typecheck check install-dev
+.PHONY: test lint format typecheck check install-dev benchmark-smoke
 
 # Install dev dependencies (requires pip)
 install-dev:
@@ -29,5 +29,7 @@ typecheck:
 pyright:
 	pyright scripts/token_reducer/
 
-# Run all checks (lint + typecheck + tests) — use before committing
-check: lint typecheck test
+# Benchmark harness (requires repo root as CWD; PYTHONPATH=scripts if not pip install -e .)
+benchmark-smoke:
+	PYTHONPATH=scripts python -m token_reducer.cli proof-harness run --tier smoke --repo-root .
+

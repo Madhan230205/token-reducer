@@ -14,3 +14,7 @@ __pycache__/
 *.hnsw.bin
 *.hnsw.meta.json
 *.faiss
+
+# Benchmark harness ephemeral clones / caches
+benchmarks/_download/
+benchmarks/_index_cache/

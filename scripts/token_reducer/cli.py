@@ -63,6 +63,10 @@ app = typer.Typer(
     rich_markup_mode="rich",
     no_args_is_help=True,
 )
+from .benchmark.cli import bench_app  # noqa: E402
+
+app.add_typer(bench_app, name="proof-harness")
+
 err = Console(stderr=True)
 
 # ---------------------------------------------------------------------------

@@ -267,4 +267,6 @@ No storage format beyond JSON Lines aggregate exports is mandated in v1.
 
 ## 13. Next step
 
-Use the **writing-plans** workflow to produce an implementation plan (runner wiring, schema version constant, initial scenario set, CI workflows, docs PR bot).
+Use the **writing-plans** workflow to produce an implementation plan (CI workflows, docs PR bot, nightly fetcher, baseline regression wiring).
+
+**CLI (proof harness v1):** `PYTHONPATH=scripts python -m token_reducer.cli proof-harness run --tier smoke --repo-root .` — or `make benchmark-smoke`. The legacy corpus indexing command stays **`benchmark`** (JSON metrics report); this harness uses the Typer group **`proof-harness`** so it does not shadow `benchmark`.

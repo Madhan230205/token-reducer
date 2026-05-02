@@ -1,0 +1,6 @@
+# Canonical external benchmark pin (spec: docs/superpowers/specs/2026-05-02-benchmark-proof-harness-design.md).
+# Fill url + commit_sha before enabling nightly fetch (TOKEN_REDUCER_BENCHMARK_FETCH=1).
+# Criteria: ~1k–5k files, clear modules, backend-leaning OSS.
+
+# url = "https://github.com/example/example.git"
+# commit_sha = "0000000000000000000000000000000000000000"
