@@ -17,7 +17,7 @@ DEFAULT_WORD_BUDGET = 150
 DEFAULT_HYBRID_MODE = "fallback"
 DEFAULT_RETRIEVAL_MODE = "compact"
 DEFAULT_EMBEDDING_BACKEND = "onnx"
-DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_ANN_ENGINE = "hnsw"
 DEFAULT_ANN_EF_SEARCH = 160
 DEFAULT_QUERY_CACHE_TTL_SECONDS = 900
@@ -53,8 +53,11 @@ DEFAULT_LSP_SERVERS: dict[str, list[str]] = {
 
 # ONNX Runtime settings for fast CPU-based dense embeddings
 # Model path can be local file or HuggingFace hub model ID
-DEFAULT_ONNX_MODEL_PATH = "sentence-transformers/all-MiniLM-L6-v2"
+DEFAULT_ONNX_MODEL_PATH = "BAAI/bge-small-en-v1.5"
 DEFAULT_ONNX_MAX_LENGTH = 512  # Max sequence length for tokenization
+DEFAULT_ONNX_BATCH_MAX_LENGTH = (
+    256  # Chunk embedding (batched): measured best quality/speed trade-off
+)
 
 # Reciprocal Rank Fusion (RRF) settings
 # RRF score = sum(1 / (k + rank)) across retrieval systems

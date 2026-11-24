@@ -1,0 +1,62 @@
+[
+  {
+    "id": "tls-cert-generation",
+    "prompt": "In this codebase, how are TLS certificates generated on the fly for intercepted hosts? Name the class responsible and the file it lives in.",
+    "expect": ["CertStore", "certs.py"]
+  },
+  {
+    "id": "client-replay",
+    "prompt": "How does the proxy replay previously saved requests from the client side? Name the addon class that implements it.",
+    "expect": ["ClientPlayback"]
+  },
+  {
+    "id": "next-layer-selection",
+    "prompt": "When a new connection arrives, how does the proxy decide which protocol layer (TLS, HTTP, TCP passthrough, ...) to use next? Name the addon that makes that decision.",
+    "expect": ["NextLayer"]
+  },
+  {
+    "id": "block-hosts",
+    "prompt": "How can a user make the proxy refuse requests to certain hosts with a status code instead of forwarding them? Name the addon class and the option.",
+    "expect": ["BlockList", "block_list"]
+  },
+  {
+    "id": "map-local",
+    "prompt": "How does the proxy serve a response from a local file on disk instead of contacting the server? Name the addon class and its option.",
+    "expect": ["MapLocal", "map_local"]
+  },
+  {
+    "id": "proxy-auth",
+    "prompt": "Where is authentication of proxy clients (username/password before allowing them through the proxy) implemented? Name the class.",
+    "expect": ["ProxyAuth"]
+  },
+  {
+    "id": "flow-model",
+    "prompt": "Which class models a single HTTP request/response exchange flowing through the proxy, and which module defines it?",
+    "expect": ["HTTPFlow", "http.py"]
+  },
+  {
+    "id": "stream-save",
+    "prompt": "Which option makes the proxy write flows to a file continuously as they happen, and which addon class handles it?",
+    "expect": ["save_stream_file", "Save"]
+  },
+  {
+    "id": "command-parsing",
+    "prompt": "The console UI has a command language. Which third-party library is used to parse command input, and which module does the lexing?",
+    "expect": ["pyparsing", "command_lexer"]
+  },
+  {
+    "id": "intercept-pause",
+    "prompt": "How does the proxy pause flows so a user can edit them before they continue? Name the addon class and the option that holds the filter.",
+    "expect": ["Intercept", "intercept"]
+  },
+  {
+    "id": "sticky-cookies",
+    "prompt": "What feature re-attaches cookies previously seen for a host to new requests, and which class implements it?",
+    "expect": ["StickyCookie"]
+  },
+  {
+    "id": "websocket-layer",
+    "prompt": "Where is the WebSocket protocol handled inside the proxy's layer stack? Give the module path.",
+    "expect": ["layers/websocket"]
+  }
+]

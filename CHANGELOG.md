@@ -8,8 +8,10 @@
 - **Non-blocking dense embeddings**: FTS index is ready in seconds; ONNX vectors are computed on a background thread in batches (`embed_texts_onnx`, padded to batch max rather than 512) — ~2.5× faster than the per-chunk path and never blocks a search.
 - **Search ranking**: code files boosted over prose, symbol-name matches boosted, sub-8-word fragments filtered; FTS query drops stopwords (`where is the … implemented`).
 - **A/B eval harness** (`scripts/ab_eval.py`, `evals/ab_tasks.sample.json`): runs tasks through `claude -p` with and without the MCP server and reports total tokens, cost, turns, pass rate.
-- First A/B result published in `evals/ab_results/` — on this small repo the MCP arm did not reduce tokens (cost −5%, tokens +36%, same pass rate). Documented as-is in the README.
+- A/B results published in `evals/ab_results/` for this repo and for mitmproxy (1,291 files): the MCP arm did **not** reduce tokens or cost on either (+36% / +57% tokens, −5% / +18% cost, same pass rate). Documented as-is in the README; the project is positioned as a code-search tool, not a proven cost reducer.
+- `search_code` ranking: rank-based boosts (RRF magnitudes made boosts cosmetic), one chunk per file in results, dense channel weighted 2× for natural-language questions. On mitmproxy's 12 vague questions: 3/12 → 5/12 correct file in top-5.
 - Skill now steers Claude to `search_code` / `read_file_slice` before whole-file `Read` / broad `Grep`.
+- **Default dense model → `BAAI/bge-small-en-v1.5`** (was all-MiniLM-L6-v2). Measured on mitmproxy (962 files, 12 vague "how does X work" questions): dense-only hit@5 went 1/12 → 7/12; MiniLM's embeddings collapsed onto a few hub chunks. ~3× slower to embed (background thread, FTS serves meanwhile); vectors from a previous model are re-embedded automatically.
 - **FTS5 index upgraded**: `porter unicode61` stemming (`blocks` matches `BLOCK`) and a second indexed column with the file path (weight 2×) so "mcp server" finds `mcp_server.py`. Existing indexes migrate and rebuild automatically on open.
 - `search_code` results carry real `file:start-end` line spans so `read_file_slice` can follow precisely.
 

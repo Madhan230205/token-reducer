@@ -1,0 +1,96 @@
+{
+ "repo": "mitmproxy/mitmproxy (shallow clone, 1,291 files / 4,511 chunks)",
+ "model": "sonnet",
+ "tasks_file": "evals/ab_tasks.mitmproxy.json",
+ "notes": "2026-11-24. Partial: Claude Code stopped the harness for low system memory after 4 of 12 tasks had both arms. Arm B had the full bge-small dense index pre-built. tokens_total = uncached input + cache reads + cache writes + output.",
+ "summary": {
+  "A": {
+   "n": 4,
+   "tokens_total_mean": 90155,
+   "cost_usd_mean": 0.0678,
+   "turns_mean": 3.5,
+   "pass_rate": 1.0
+  },
+  "B": {
+   "n": 4,
+   "tokens_total_mean": 141578,
+   "cost_usd_mean": 0.0803,
+   "turns_mean": 4.75,
+   "pass_rate": 1.0
+  }
+ },
+ "rows": [
+  {
+   "task": "tls-cert-generation",
+   "rep": 1,
+   "arm": "A",
+   "tokens_total": 88698,
+   "turns": 4,
+   "cost_usd": 0.0898,
+   "pass": true
+  },
+  {
+   "task": "tls-cert-generation",
+   "rep": 1,
+   "arm": "B",
+   "tokens_total": 155797,
+   "turns": 5,
+   "cost_usd": 0.1045,
+   "pass": true
+  },
+  {
+   "task": "client-replay",
+   "rep": 1,
+   "arm": "A",
+   "tokens_total": 90838,
+   "turns": 3,
+   "cost_usd": 0.0607,
+   "pass": true
+  },
+  {
+   "task": "client-replay",
+   "rep": 1,
+   "arm": "B",
+   "tokens_total": 157463,
+   "turns": 5,
+   "cost_usd": 0.0774,
+   "pass": true
+  },
+  {
+   "task": "next-layer-selection",
+   "rep": 1,
+   "arm": "A",
+   "tokens_total": 93274,
+   "turns": 4,
+   "cost_usd": 0.0696,
+   "pass": true
+  },
+  {
+   "task": "next-layer-selection",
+   "rep": 1,
+   "arm": "B",
+   "tokens_total": 163776,
+   "turns": 6,
+   "cost_usd": 0.0878,
+   "pass": true
+  },
+  {
+   "task": "block-hosts",
+   "rep": 1,
+   "arm": "A",
+   "tokens_total": 87809,
+   "turns": 3,
+   "cost_usd": 0.051,
+   "pass": true
+  },
+  {
+   "task": "block-hosts",
+   "rep": 1,
+   "arm": "B",
+   "tokens_total": 89274,
+   "turns": 3,
+   "cost_usd": 0.0514,
+   "pass": true
+  }
+ ]
+}

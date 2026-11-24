@@ -11,6 +11,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -25,6 +26,7 @@ from .config import (
     DEFAULT_EMBEDDING_BACKEND,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_FTS_K,
+    DEFAULT_ONNX_BATCH_MAX_LENGTH,
     DEFAULT_VECTOR_K,
 )
 from .db import (
@@ -47,6 +49,13 @@ PREVIEW_CHARS = 420
 MAX_TOP_K = 25
 EMBED_BATCH = 32
 MIN_RESULT_WORDS = 8
+MAX_CHUNKS_PER_FILE = 1
+NL_FTS_POOL = 10
+NL_VEC_WEIGHT = 2.0
+# Rows that still need a dense vector from the *current* model: hash placeholders, or vectors
+# left by a different ONNX model (MiniLM and bge-small both emit 384 dims, so dims can't tell).
+STALE_WHERE = "(ce.backend = 'hash' OR (ce.backend = 'onnx' AND COALESCE(ce.model_name, '') != ?))"
+STALE_EMBEDDINGS_SQL = f"SELECT COUNT(*) FROM chunk_embeddings ce WHERE {STALE_WHERE}"
 CODE_FILE_BOOST = 1.25
 SYMBOL_MATCH_BOOST = 1.5
 TEST_FILE_PENALTY = 0.8
@@ -171,16 +180,12 @@ class Engine:
 
     def _dense_ready(self) -> bool:
         with self._lock:
-            row = self.conn.execute(
-                "SELECT COUNT(*) FROM chunk_embeddings WHERE backend = 'hash'"
-            ).fetchone()
+            row = self.conn.execute(STALE_EMBEDDINGS_SQL, (self.model,)).fetchone()
         return not row or int(row[0]) == 0
 
     def pending_embeddings(self) -> int:
         with self._lock:
-            row = self.conn.execute(
-                "SELECT COUNT(*) FROM chunk_embeddings WHERE backend = 'hash'"
-            ).fetchone()
+            row = self.conn.execute(STALE_EMBEDDINGS_SQL, (self.model,)).fetchone()
         return int(row[0]) if row else 0
 
     def upgrade_embeddings(self, batch: int = EMBED_BATCH) -> int:
@@ -193,14 +198,18 @@ class Engine:
             with self._lock:
                 rows = self.conn.execute(
                     "SELECT ce.chunk_id, c.text FROM chunk_embeddings ce JOIN chunks c ON c.id = ce.chunk_id "
-                    "WHERE ce.backend = 'hash' ORDER BY ce.chunk_id LIMIT ?",
-                    (batch,),
+                    f"WHERE {STALE_WHERE} ORDER BY ce.chunk_id LIMIT ?",
+                    (self.model, batch),
                 ).fetchall()
             if not rows:
                 break
             try:
                 with self._embed_lock:
-                    vecs = embed_texts_onnx([str(r["text"]) for r in rows], self.model)
+                    vecs = embed_texts_onnx(
+                        [str(r["text"]) for r in rows],
+                        self.model,
+                        max_length=DEFAULT_ONNX_BATCH_MAX_LENGTH,
+                    )
             except Exception as exc:
                 print(f"[token-reducer] dense embedding upgrade stopped: {exc}", file=sys.stderr)
                 return done
@@ -252,15 +261,23 @@ class Engine:
                         embedding_backend=self.backend,
                         embedding_model=self.model,
                     )
-        ranked, _ = rerank_candidates(query, fts, vec, top_k=pool)
+        # Natural-language questions ("how does the proxy decide...") carry little lexical
+        # signal; identifier-style queries carry a lot. Weight the channels accordingly.
+        if vec and _is_natural_language(query):
+            ranked = _weighted_rrf(fts[:NL_FTS_POOL], vec, w_fts=1.0, w_vec=NL_VEC_WEIGHT)
+        else:
+            ranked, _ = rerank_candidates(query, fts, vec, top_k=pool)
         q_terms = {t for t in tokenize(query) if len(t) >= 3}
         wants_tests = bool(q_terms & {"test", "tests", "spec", "fixture"})
         scored: list[tuple[float, Candidate, dict[str, str | int]]] = []
-        for c in ranked:
-            if len(c.text.split()) < MIN_RESULT_WORDS and len(ranked) > top_k:
+        n = len(ranked)
+        for i, c in enumerate(ranked):
+            if len(c.text.split()) < MIN_RESULT_WORDS and n > top_k:
                 continue
             meta = infer_chunk_meta(c.text, c.source)
-            score = float(c.final_score)
+            # Rank-based score: fused RRF magnitudes are dominated by "appears in both lists",
+            # which would make these boosts cosmetic. Positions keep them meaningful.
+            score = (n - i) / n
             if is_code_file(c.source):
                 score *= CODE_FILE_BOOST
             if not wants_tests and _looks_like_test(c.source):
@@ -270,9 +287,19 @@ class Engine:
                 score *= SYMBOL_MATCH_BOOST
             scored.append((score, c, meta))
         scored.sort(key=lambda t: t[0], reverse=True)
+        # Diversity: a file with many matching chunks must not fill the whole result list.
+        per_file: dict[str, int] = {}
+        picked: list[tuple[float, Candidate, dict[str, str | int]]] = []
+        for item in scored:
+            if per_file.get(item[1].source, 0) >= MAX_CHUNKS_PER_FILE:
+                continue
+            per_file[item[1].source] = per_file.get(item[1].source, 0) + 1
+            picked.append(item)
+            if len(picked) >= top_k:
+                break
         out: list[dict[str, object]] = []
         file_cache: dict[str, str | None] = {}
-        for score, c, meta in scored[:top_k]:
+        for score, c, meta in picked:
             c.final_score = score
             start, end = _locate_lines(c.source, c.text, file_cache)
             out.append(
@@ -390,6 +417,32 @@ def _locate_lines(source: str, chunk: str, cache: dict[str, str | None]) -> tupl
             n = len(chunk.splitlines())
             return i + 1, min(len(lines), i + n)
     return 0, 0
+
+
+_IDENTIFIER_RE = re.compile(r"[A-Za-z]+_[A-Za-z0-9_]+|[a-z][A-Z]|\w\.\w|\w\(")
+
+
+def _is_natural_language(query: str) -> bool:
+    """True for prose questions with no identifier-looking tokens (snake_case, camelCase, dotted)."""
+    return len(tokenize(query)) >= 6 and not _IDENTIFIER_RE.search(query)
+
+
+def _weighted_rrf(
+    fts: list[Candidate], vec: list[Candidate], *, w_fts: float, w_vec: float, k: int = 60
+) -> list[Candidate]:
+    scores: dict[int, float] = {}
+    by_id: dict[int, Candidate] = {}
+    for rank, c in enumerate(fts, 1):
+        scores[c.chunk_id] = scores.get(c.chunk_id, 0.0) + w_fts / (k + rank)
+        by_id[c.chunk_id] = c
+    for rank, c in enumerate(vec, 1):
+        scores[c.chunk_id] = scores.get(c.chunk_id, 0.0) + w_vec / (k + rank)
+        by_id.setdefault(c.chunk_id, c)
+    top = max(scores.values(), default=1.0) or 1.0
+    out = sorted(by_id.values(), key=lambda c: scores[c.chunk_id], reverse=True)
+    for c in out:
+        c.final_score = scores[c.chunk_id] / top
+    return out
 
 
 def _looks_like_test(source: str) -> bool:

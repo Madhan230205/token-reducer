@@ -237,7 +237,7 @@ def vector_retrieve(
         WHERE ce.backend = ? AND ce.dimensions = ?
         """
         params: list[object] = [backend, vector_dims]
-        if backend == "ml" and model_name:
+        if backend in ("ml", "onnx") and model_name:
             base_sql += " AND (ce.model_name = ? OR ce.model_name IS NULL)"
             params.append(model_name)
         return conn.execute(base_sql, tuple(params)).fetchall()

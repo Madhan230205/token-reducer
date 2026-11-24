@@ -31,7 +31,7 @@ Token Reducer runs a small search engine next to Claude Code and exposes it as M
 - `get_context(task)` → a compressed, token-budgeted brief for a task
 - `find_symbol(name)` → every place an identifier appears
 
-Under the hood: tree-sitter AST chunking (functions/classes stay whole), SQLite FTS5 BM25 with stemming over code **and** file paths, ONNX MiniLM embeddings fused with reciprocal rank fusion, incremental re-indexing on every call. No network, no API keys, index stored under `~/.cache` — nothing is written into your repo.
+Under the hood: tree-sitter AST chunking (functions/classes stay whole), SQLite FTS5 BM25 with stemming over code **and** file paths, ONNX `bge-small-en-v1.5` embeddings fused with reciprocal rank fusion, incremental re-indexing on every call. No API keys, no network after the one-time ~127 MB model download, index stored under `~/.cache` — nothing is written into your repo.
 
 ```
 ┌────────────────┐   search_code()   ┌───────────────┐   3–6 chunks    ┌────────────┐
@@ -162,7 +162,14 @@ python scripts/ab_eval.py --repo /path/to/repo --tasks evals/ab_tasks.sample.jso
 
 Write 10–30 tasks for your own repo in the same JSON shape (`prompt` + `expect` substrings). If the B arm does not cut total tokens at equal pass rate, the tool is not earning its place in your setup — that is the number to trust.
 
-**First measurement (honest):** on this repo itself (190 files, Sonnet, 6 "where is X" tasks, 1 repeat — [raw rows](evals/ab_results/2026-11-24-token-reducer-repo-sonnet.json)) the MCP arm did **not** win: cost −5%, total tokens +36% (mostly cached re-reads from one or two extra turns), pass rate 6/6 vs 5/5. Grep already answers identifier-style questions on a small repo cheaply, and the MCP tool schemas add to every turn's prefix. Where this tool should pay off — large repos, vague "how does X work" questions, non-identifier queries — is exactly what the harness is for. Run it on your repo before believing any savings number, including ours.
+**Measured so far (honest):** two repos, Sonnet, read-only "where/how does X work" tasks, 1 repeat each — raw rows in [`evals/ab_results/`](evals/ab_results/).
+
+| Repo | Tasks | Δ total tokens (B vs A) | Δ cost | Δ turns | Pass A / B |
+|------|-------|------------------------|--------|---------|------------|
+| this repo (190 files) | 5 paired | +36% | −5% | +0.2 | 5/5 / 5/5 |
+| mitmproxy (1,291 files) | 4 paired (run stopped early) | **+57%** | **+18%** | +1.25 | 4/4 / 4/4 |
+
+The MCP arm did **not** save tokens or money on either repo. Claude Code's own Grep/Read loop answers these questions in 3–4 turns; adding the server adds a tool round-trip and a larger cached prefix on every turn, and the model often double-checks the search result with a Read anyway. Treat Token Reducer today as a **code-search tool** (fast hybrid search with exact line spans, usable from any MCP client) — not as a proven cost reducer. If you find a workload where arm B wins, the harness output is the evidence to post.
 
 ---
 
@@ -293,7 +300,7 @@ python scripts/apply_diff.py --input response.txt --dry-run
 
 - **Storage**: SQLite with FTS5 + custom embeddings table
 - **Chunking**: Tree-sitter AST parsing with regex fallback
-- **Embeddings**: ONNX all-MiniLM-L6-v2 on CPU (batched; zero-dependency hash fallback)
+- **Embeddings**: ONNX `BAAI/bge-small-en-v1.5` on CPU, batched, computed in the background (zero-dependency hash fallback)
 - **ANN Search**: HNSW via hnswlib (with FAISS fallback)
 - **Compression**: TextRank + query-relevance scoring
 
