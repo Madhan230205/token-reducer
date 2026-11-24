@@ -38,7 +38,7 @@ flowchart LR
 | **Merge / rank** | Hybrid merge → scored pool | Top chunk scores drive order |
 | **Select + compress** | Budget + relevance floor | **~1,597** “input” tokens → **~416** output tokens (**~3.84×** compression on that query) |
 | **Spine** | Query, retrieval, routing, compression, outcome slices filled | Single `trace_id` |
-| **Trace** | `decision_trace_v1` projection | See [decision-trace-star.md](decision-trace-star.md) |
+| **Trace** | `decision_trace_v2` projection | See [decision-trace-star.md](decision-trace-star.md) |
 | **Output** | `ContextPacket` + plugin JSON (`code_context`, hybrid explainability fields) | Delivered to Claude / CLI |
 
 ---
@@ -55,4 +55,4 @@ flowchart LR
 
 ## 4. Honest scope note
 
-The diagram is **architecture-accurate**; **full automation** of every label in `decision_trace_v1.path` and sibling population is still being wired from live state. The **schemas and spine** are in-repo; the **star narrative** is this document plus [decision-trace-star.md](decision-trace-star.md).
+The diagram is **architecture-accurate**; **full automation** of every label in `decision_trace_v2.path` and sibling population is still being wired from live state. The **schemas and spine** are in-repo; the **star narrative** is this document plus [decision-trace-star.md](decision-trace-star.md).

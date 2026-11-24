@@ -1,16 +1,17 @@
-"""Model-aware scaling for chunk budgets (shared by subagents + assertions)."""
+"""Re-exports model/budget helpers from :mod:`model_tuning` (stable path for subagents)."""
 
 from __future__ import annotations
 
+from ..model_tuning import (
+    CompressionModelTuning,
+    compression_model_tuning,
+    effective_chunk_token_budget,
+    model_scale,
+)
 
-def model_scale(model: str | None) -> float:
-    m = (model or "sonnet").lower()
-    if "haiku" in m:
-        return 0.7
-    if "opus" in m:
-        return 1.08
-    return 1.0
-
-
-def effective_chunk_token_budget(token_budget: int, model: str | None) -> int:
-    return max(200, int(int(token_budget) * model_scale(model)))
+__all__ = [
+    "CompressionModelTuning",
+    "compression_model_tuning",
+    "effective_chunk_token_budget",
+    "model_scale",
+]

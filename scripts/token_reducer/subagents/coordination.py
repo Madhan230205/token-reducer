@@ -14,9 +14,7 @@ _PATH_RE = re.compile(
 )
 
 _STOP = frozenset(
-    "the a an and or for to of in on at by is are was were be been being it this that these those "
-    "with from as if when into over out up down all any some not no yes how what why where which "
-    "who can could should would will just like into about into than then them their there".split()
+    ["the", "a", "an", "and", "or", "for", "to", "of", "in", "on", "at", "by", "is", "are", "was", "were", "be", "been", "being", "it", "this", "that", "these", "those", "with", "from", "as", "if", "when", "into", "over", "out", "up", "down", "all", "any", "some", "not", "no", "yes", "how", "what", "why", "where", "which", "who", "can", "could", "should", "would", "will", "just", "like", "into", "about", "into", "than", "then", "them", "their", "there"]
 )
 
 
@@ -95,12 +93,34 @@ def decompose_tasks(prompt: str, structured: dict[str, Any]) -> list[str]:
     return base[:4]
 
 
+_ERROR_TYPENAME_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]{2,}(?:Error|Exception))\b")
+
+
+def extract_error_typenames(prompt: str, *, limit: int = 6) -> list[str]:
+    """Pull ``ValueError``-style tokens from the query for bug-fix ranking."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in _ERROR_TYPENAME_RE.finditer(prompt or ""):
+        w = m.group(1)
+        if w not in seen:
+            seen.add(w)
+            out.append(w)
+            if len(out) >= limit:
+                break
+    return out
+
+
 def build_run_memory(prompt: str, structured: dict[str, Any]) -> dict[str, Any]:
     """Shared dict read by downstream agents in the same pass."""
+    legacy = str(structured.get("legacy_intent", "explain_code"))
+    terms = extract_focus_terms(prompt)
+    if legacy == "bug_fix":
+        terms = list(dict.fromkeys([*extract_error_typenames(prompt), *terms]))[:12]
     return {
         "decomposition": decompose_tasks(prompt, structured),
         "focus_paths": extract_focus_paths(prompt),
-        "focus_terms": extract_focus_terms(prompt),
+        "focus_terms": terms,
+        "legacy_intent": legacy,
     }
 
 

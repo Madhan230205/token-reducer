@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
-from typing import cast
 
+from token_reducer.audit_spine import (
+    CompressionLossMetrics,
+    CompressionSection,
+    OutcomeSection,
+    RetrievalCandidate,
+    RetrievalDisagreement,
+    RetrievalSection,
+    RoutingSection,
+    bootstrap_spine,
+)
 from token_reducer.benchmark.runner import (
     SCHEMA_VERSION,
-    build_decision_trace,
+    build_decision_trace_payload,
     load_scenarios,
     run_scenario,
     run_suite,
@@ -18,8 +26,11 @@ from token_reducer.benchmark.stability import (
     canonical_bullets_hash,
     canonical_selected_sources_hash,
 )
+from token_reducer.db import connect_db
 from token_reducer.execution_route import ExecutionRoute
+from token_reducer.intent import analyze_query_intent, detect_intent
 from token_reducer.orchestrator import ContextRunState
+from token_reducer.plugin_settings import get_runtime_defaults
 
 
 def test_load_scenarios_reads_json(tmp_path: Path) -> None:
@@ -59,28 +70,87 @@ def test_stability_hashes_deterministic(tmp_path: Path) -> None:
     assert b1 == b2
 
 
-def test_build_decision_trace_shape() -> None:
-    st = cast(
-        ContextRunState,
-        SimpleNamespace(
-            execution_route=ExecutionRoute(
-                tier="tool",
-                skill_id="doc-coauthoring",
-                skip_subagents=False,
-                skip_lsp=False,
-                retrieval_scale=1.0,
-                reducer_token_threshold=2800,
-                efficiency_score=1.0,
-            ),
+def test_build_decision_trace_payload_shape(tmp_path: Path) -> None:
+    db_path = tmp_path / "bench_unit.db"
+    conn = connect_db(db_path)
+    try:
+        route = ExecutionRoute(
+            tier="tool",
+            skill_id="doc-coauthoring",
+            skip_subagents=False,
+            skip_lsp=False,
+            retrieval_scale=1.0,
+            reducer_token_threshold=2800,
+            efficiency_score=1.0,
+        )
+        si = detect_intent("x")
+        spine = bootstrap_spine("x", si, route)
+        spine = spine.model_copy(
+            update={
+                "routing": RoutingSection(selected_tier="tool"),
+                "retrieval": RetrievalSection(
+                    candidates=(
+                        RetrievalCandidate(
+                            doc_id="a",
+                            path="p.py",
+                            chunk_id="99",
+                            source="fts",
+                            score=0.5,
+                            rank=1,
+                        ),
+                    ),
+                    disagreement=RetrievalDisagreement(),
+                ),
+                "compression": CompressionSection(
+                    input_tokens=100,
+                    output_tokens=50,
+                    retained_chunks=("99",),
+                    dropped_chunks=("100",),
+                    loss_metrics=CompressionLossMetrics(
+                        importance_retained_ratio=0.5,
+                        salient_span_checksum="",
+                    ),
+                ),
+                "outcome": OutcomeSection(latency_ms=10, final_confidence=0.8),
+            }
+        )
+        rt = get_runtime_defaults()
+        st = ContextRunState(
+            conn=conn,
+            db_path=db_path,
+            query="x",
+            intent=analyze_query_intent("x"),
+            runtime=rt,
+            memory_blob={},
+            session_id="t",
+            top_k=5,
+            fts_k=8,
+            vector_k=0,
+            min_fts_hits=3,
+            hybrid_mode="fallback",
+            embedding_backend="hash",
+            embedding_model=None,
+            dimensions=64,
+            word_budget=200,
+            relevance_floor=0.1,
+            workspace_root=None,
+            execution_route=route,
+            audit_spine=spine,
             subagent_debug={"subagents": ["filter", "ranking"]},
-            bullets=["x"],
-        ),
-    )
-    dt = build_decision_trace(st)
-    assert dt["tier"] == "tool"
-    assert dt["skill_selected"] == "doc-coauthoring"
-    assert dt["subagents_used"] == ["filter", "ranking"]
-    assert dt["compression_triggered"] is True
+            bullets=["z"],
+            omitted_redundant=[],
+        )
+        dt = build_decision_trace_payload(st)
+        assert dt["schema_version"] == "decision_trace_v2"
+        assert dt["routing_tier"] == "tool"
+        assert dt["tool_skill_id"] == "doc-coauthoring"
+        assert dt["subagents_used"] == ["filter", "ranking"]
+        assert dt["compression_triggered"] is True
+        assert "reliability" in dt
+        assert len(dt["selected_chunks"]) >= 1
+        assert dt["selected_chunks"][0]["chunk_id"] == "99"
+    finally:
+        conn.close()
 
 
 def test_smoke_jwt_micro_scenario_passes() -> None:
@@ -96,7 +166,10 @@ def test_smoke_jwt_micro_scenario_passes() -> None:
     det = row["deterministic"]
     assert det["pass"] is True
     assert "decision_trace" in row
-    assert row["decision_trace"]["tier"] in ("simple", "tool", "complex")
+    assert row["decision_trace"]["schema_version"] == "decision_trace_v2"
+    assert row["decision_trace"]["routing_tier"] in ("simple", "tool", "complex")
+    assert row.get("trace_bundle") is not None
+    assert row["trace_bundle"]["trace_id"] == row["decision_trace"]["trace_id"]
 
 
 def test_run_suite_smoke_tier() -> None:

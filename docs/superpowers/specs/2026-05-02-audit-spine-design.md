@@ -9,7 +9,7 @@
 - `docs/superpowers/specs/2026-05-02-context-intelligence-layer-design.md` — bounds and caps that the spine must respect where overlap exists.
 - `docs/superpowers/specs/2026-05-02-benchmark-proof-harness-design.md` — replay, thresholds, stability; harness consumes **full spine** (this spec).
 - `docs/superpowers/specs/2026-05-02-adaptive-feedback-loop-design.md` — adaptive **events** become projections or append-only extensions of the spine; no second brain.
-- `docs/superpowers/specs/2026-05-02-trace-bundle-control-plane-design.md` — **TraceBundle** siblings (`signal_snapshot_v1`, `gate_decision_v1`, `decision_trace_v1`) linked by the same `trace_id`; policy gates **never** embedded in the spine.
+- `docs/superpowers/specs/2026-05-02-trace-bundle-control-plane-design.md` — **TraceBundle** siblings (`signal_snapshot_v1`, `gate_decision_v1`, `decision_trace_v2`) linked by the same `trace_id`; policy gates **never** embedded in the spine.
 
 ---
 

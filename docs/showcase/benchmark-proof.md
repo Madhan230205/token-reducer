@@ -68,7 +68,7 @@ When both FTS and vector channels contribute, the **audit spine** stores disagre
 
 1. **Routing / risk** — `routing.risk_flags` can include `low_overlap` / `high_disagreement` (see audit spine spec).  
 2. **Outcome confidence** — `outcome.final_confidence` may be **discounted** when flags fire (see implementation in `explainability_render.confidence_band`).  
-3. **Decision trace** — `compression.flags` may include `disagreement_present` when projecting to `decision_trace_v1`.  
+3. **Decision trace** — `compression.flags` may include `disagreement_present` when projecting to `decision_trace_v2`.  
 4. **UX** — Hybrid sidecar stays short; verbose mode exposes full spine JSON for debugging.
 
 This is **deterministic** signal handling — no LLM-generated “explanation” on the hot path.

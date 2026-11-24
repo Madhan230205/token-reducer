@@ -5,6 +5,7 @@ from token_reducer.subagents.coordination import (
     build_run_memory,
     decompose_tasks,
     diversify_chunk_order,
+    extract_error_typenames,
     extract_focus_paths,
     extract_focus_terms,
     merge_subtask_streams,
@@ -21,6 +22,12 @@ def test_extract_focus_terms_drops_stopwords() -> None:
     terms = extract_focus_terms("how does the frobnicateWidget handle retries for users")
     assert "frobnicateWidget" in terms or "retries" in terms
     assert "the" not in terms
+
+
+def test_extract_error_typenames_finds_python_exceptions() -> None:
+    names = extract_error_typenames("Raises ValueError when jwt is expired; KeyError on missing header")
+    assert "ValueError" in names
+    assert "KeyError" in names
 
 
 def test_decompose_bug_fix_has_multiple_steps() -> None:
@@ -92,3 +99,11 @@ def test_build_run_memory_keys() -> None:
     )
     assert "decomposition" in rm and "focus_paths" in rm and "focus_terms" in rm
     assert isinstance(rm["decomposition"], list)
+
+
+def test_build_run_memory_bug_fix_prefixes_error_typenames() -> None:
+    rm = build_run_memory(
+        "Login fails with AttributeError on None",
+        {"legacy_intent": "bug_fix", "type": "code", "k": 40, "token_budget": 2000, "compression_level": "high"},
+    )
+    assert rm["focus_terms"] and rm["focus_terms"][0] == "AttributeError"

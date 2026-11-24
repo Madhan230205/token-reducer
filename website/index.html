@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Token Reducer — decision-aware context compression for Claude Code. Local FTS + embeddings, audit spine, 98.9% corpus-level savings in published benchmarks."
+    />
+    <title>Token Reducer — Cut context. Keep the signal.</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Outfit:wght@600;700&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header" role="banner">
+      <div class="header-inner">
+        <a class="logo" href="#" aria-label="Token Reducer home">
+          <span class="logo-mark" aria-hidden="true"></span>
+          token-reducer
+        </a>
+
+        <button
+          type="button"
+          class="nav-toggle"
+          aria-expanded="false"
+          aria-controls="site-nav"
+        >
+          <span class="nav-toggle-label">Menu</span>
+          <span class="nav-toggle-icon" aria-hidden="true"></span>
+        </button>
+
+        <nav id="site-nav" class="site-nav" aria-label="Primary">
+          <ul class="nav-links">
+            <li><a href="#problem">Problem</a></li>
+            <li><a href="#pipeline">Pipeline</a></li>
+            <li><a href="#proof">Proof</a></li>
+            <li><a href="#features">Features</a></li>
+          </ul>
+          <div class="nav-cta">
+            <a
+              class="btn btn-ghost"
+              href="https://github.com/Madhan230205/token-reducer"
+              target="_blank"
+              rel="noopener noreferrer"
+              >GitHub</a
+            >
+            <a class="btn btn-primary" href="#install">Install</a>
+          </div>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="container hero-grid">
+          <div class="reveal">
+            <p class="hero-eyebrow">Claude Code plugin · v1.4.0 benchmarked</p>
+            <h1 id="hero-title">
+              Cut context.<br />
+              <em>Keep the signal.</em>
+            </h1>
+            <p class="hero-sub">
+              Decision-aware compression for Claude Code — not another RAG wrapper.
+              Route by intent, retrieve with FTS + local embeddings, compress with an
+              audit spine you can replay.
+            </p>
+            <div class="hero-actions">
+              <a class="btn btn-primary" href="#install">Install plugin</a>
+              <a
+                class="btn btn-ghost"
+                href="https://github.com/Madhan230205/token-reducer"
+                target="_blank"
+                rel="noopener noreferrer"
+                >View on GitHub</a
+              >
+            </div>
+            <div class="hero-stats" role="list">
+              <div class="hero-stat" role="listitem">
+                <strong>98.9%</strong>
+                <span>corpus token savings (BENCHMARK §2.3)</span>
+              </div>
+              <div class="hero-stat" role="listitem">
+                <strong>27 ms</strong>
+                <span>avg query latency</span>
+              </div>
+              <div class="hero-stat" role="listitem">
+                <strong>Local</strong>
+                <span>SQLite FTS5 + hash embeddings default</span>
+              </div>
+            </div>
+          </div>
+          <aside class="hero-panel reveal reveal-delay-1" aria-label="Sample hybrid explainability output">
+            <p class="panel-tag">context_optimization_line · from pipeline docs</p>
+            <pre>Context optimized (balanced, medium confidence). Key focus: auth.py + session.ts.</pre>
+            <p class="panel-tag panel-tag--spaced">context_explainability.sidecar</p>
+            <pre>Selected: auth.py (top relevance), session.ts (patch path)
+Dropped: test_auth.py (redundant)
+Compression: balanced • medium confidence</pre>
+          </aside>
+        </div>
+      </section>
+
+      <section id="problem" class="problem" aria-labelledby="problem-title">
+        <div class="container">
+          <p class="section-label reveal">The cost of raw context</p>
+          <h2 id="problem-title" class="section-title reveal">
+            Every turn re-sends the bloat
+          </h2>
+          <p class="section-lead reveal">
+            Native Read/Grep loads whole files into the model. Long chat history compounds.
+            Token Reducer runs <em>before</em> reasoning — indexing, routing, retrieval, and
+            compression with budgets you control.
+          </p>
+          <div class="problem-cards">
+            <article class="problem-card reveal">
+              <div class="icon" aria-hidden="true">◎</div>
+              <h3>Context bloat</h3>
+              <p>
+                Indexed corpora can reach tens of thousands of tokens. Sending the pool
+                raw burns budget on noise.
+              </p>
+            </article>
+            <article class="problem-card reveal reveal-delay-1">
+              <div class="icon" aria-hidden="true">$</div>
+              <h3>Compounding cost</h3>
+              <p>
+                Published benchmark: about <strong>$34.30 saved per 100 queries</strong>
+                versus shipping full context (v1.4.0, same codebase corpus).
+              </p>
+            </article>
+            <article class="problem-card reveal reveal-delay-2">
+              <div class="icon" aria-hidden="true">?</div>
+              <h3>Black-box retrieval</h3>
+              <p>
+                Without a spine, “why this chunk?” is guesswork. Token Reducer separates
+                policy, signals, and outcome — replayable by <code>trace_id</code>.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="pipeline" aria-labelledby="pipeline-title">
+        <div class="container">
+          <p class="section-label reveal">How it works</p>
+          <h2 id="pipeline-title" class="section-title reveal">
+            Three layers: classify → route → compress
+          </h2>
+          <p class="section-lead reveal">
+            Hooks on <code>UserPromptSubmit</code>, orchestrated stages, and a control plane
+            that emits sibling artifacts under one trace.
+          </p>
+
+          <div class="pipeline-flow reveal" role="list" aria-label="Pipeline stages">
+            <div class="pipe-step" role="listitem">
+              <span class="num">01</span>
+              <h4>Intent</h4>
+              <p>Regex + structured hints → tier</p>
+            </div>
+            <div class="pipe-step" role="listitem">
+              <span class="num">02</span>
+              <h4>Retrieve</h4>
+              <p>BM25-first, vector fallback</p>
+            </div>
+            <div class="pipe-step" role="listitem">
+              <span class="num">03</span>
+              <h4>Merge</h4>
+              <p>Rerank, relevance floor</p>
+            </div>
+            <div class="pipe-step" role="listitem">
+              <span class="num">04</span>
+              <h4>Compress</h4>
+              <p>TextRank + word budget</p>
+            </div>
+            <div class="pipe-step" role="listitem">
+              <span class="num">05</span>
+              <h4>Trace</h4>
+              <p>Spine + decision_trace_v2</p>
+            </div>
+          </div>
+
+          <div class="tier-grid reveal">
+            <article class="tier-card" data-tier="simple">
+              <h3>Simple</h3>
+              <ul>
+                <li>~0.52× retrieval scale</li>
+                <li>Subagents &amp; LSP skipped</li>
+                <li>Light compression under token threshold</li>
+              </ul>
+            </article>
+            <article class="tier-card" data-tier="tool">
+              <h3>Tool</h3>
+              <ul>
+                <li>One skill from registry</li>
+                <li>~0.72× retrieval, LSP on</li>
+                <li>Reducer only above ~2800 token mass</li>
+              </ul>
+            </article>
+            <article class="tier-card" data-tier="complex">
+              <h3>Complex</h3>
+              <ul>
+                <li>Full subagent chain</li>
+                <li>Neighborhood expansion when allowed</li>
+                <li>Heavy compression + expansion path</li>
+              </ul>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="proof" class="proof-section" aria-labelledby="proof-title">
+        <div class="container">
+          <p class="section-label reveal">Before / after</p>
+          <h2 id="proof-title" class="section-title reveal">
+            Proof you can scrub through
+          </h2>
+          <p class="section-lead reveal">
+            Query-level numbers from <strong>BENCHMARK.md</strong> (v1.4.0): “How does
+            authentication work?” — <strong>1,597</strong> input tokens → <strong>416</strong>
+            output, <strong>3.84×</strong> compression, <strong>17.26 ms</strong> latency, 7
+            chunks.             Drag the handle or slider for a smooth before/after reveal — one scroll, no
+            competing panes.
+          </p>
+          <p class="proof-badge reveal">
+            Demo excerpt below is realistic-shaped; metrics are from published benchmark rows.
+          </p>
+
+          <div class="proof-metrics-bar reveal" role="group" aria-label="Query-level metrics">
+            <div class="metric-pill">
+              <div class="value value--before" id="metric-before">1,597</div>
+              <div class="label">tokens before (selected window)</div>
+            </div>
+            <div class="metric-pill">
+              <div class="value" id="metric-after">416</div>
+              <div class="label">tokens after (compressed)</div>
+            </div>
+            <div class="metric-pill">
+              <div class="value">3.84×</div>
+              <div class="label">compression ratio</div>
+            </div>
+            <div class="metric-pill">
+              <div class="value">17.26 ms</div>
+              <div class="label">query latency</div>
+            </div>
+          </div>
+
+          <p class="compare-hint reveal">
+            <span class="compare-hint-icon" aria-hidden="true">↔</span>
+            Drag vertically to read · drag horizontally to compare
+          </p>
+
+          <div
+            class="compare compare-card"
+            data-compare
+            style="--compare-pos: 48%"
+            role="region"
+            aria-label="Before and after context comparison"
+          >
+            <div class="compare-viewport" data-compare-viewport>
+              <div class="compare-scroller" data-compare-scroller>
+                <div class="compare-stack">
+                  <div class="compare-layer compare-layer--before" aria-hidden="false">
+                    <header class="compare-header">
+                      <h3>Before · raw context path</h3>
+                      <span class="token-count">~4,180 words · ~1,597 tokens (benchmark window)</span>
+                    </header>
+                    <pre class="compare-code" id="before-text">// User pasted logs + opened whole files via Read/Grep
+// ─────────────────────────────────────────────────────
+src/auth.py (full file, 312 lines)
+  class JWTValidator: ...
+  def verify_token(...): ...
+
+src/session.ts (full file)
+  export function refreshSession(...) { ... }
+
+tests/test_auth.py (full file)
+  def test_expired_token(): ...
+
+legacy/old.py (deprecated, still in index)
+  # AUTH v1 — do not use
+
+docs/ARCHITECTURE.md (excerpt + surrounding sections)
+hooks/userprompt_guard.py
+scripts/token_reducer/pipeline.py
+... 7 FTS hits merged, no relevance floor applied ...
+
+[ chat history turns 1–12 re-injected each request ]
+[ system + plugin instructions ]
+
+TOTAL SELECTED WINDOW: 1,597 tokens (benchmark: auth query)</pre>
+                  </div>
+                  <div
+                    class="compare-layer compare-layer--after"
+                    data-compare-after
+                    aria-hidden="false"
+                  >
+                    <header class="compare-header">
+                      <h3>After · token-reducer packet</h3>
+                      <span class="token-count">~320 words · 416 tokens · 7 chunks → top-K</span>
+                    </header>
+                    <pre class="compare-code" id="after-text">{
+  "context_optimization_line":
+    "Context optimized (balanced, medium confidence). Key focus: auth.py + session.ts.",
+
+  "selected_chunks": [
+    <span class="hl-keep">{ "path": "src/auth.py", "reason": "top relevance" }</span>,
+    <span class="hl-keep">{ "path": "src/session.ts", "reason": "patch path" }</span>
+  ],
+  "dropped_chunks": [
+    <span class="hl-drop">{ "path": "tests/test_auth.py", "reason": "low score" }</span>,
+    <span class="hl-drop">{ "path": "legacy/old.py", "reason": "redundant" }</span>
+  ],
+  "compression": { "preset": "balanced", "ratio": "3.84x" },
+  "path": "CACHE_MISS → RETRIEVE → MERGE → RERANK → SELECT → COMPRESS → PACKAGE"
+}
+
+Sidecar:
+  Selected: auth.py, session.ts
+  Dropped: test_auth.py (redundant)
+  Compression: balanced • medium confidence</pre>
+                  </div>
+                </div>
+              </div>
+
+              <div class="compare-divider" data-compare-divider aria-hidden="true">
+                <span class="compare-divider-knob" tabindex="0" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="48" aria-label="Drag to compare before and after"></span>
+              </div>
+              <div class="compare-edge-glow" aria-hidden="true"></div>
+            </div>
+
+            <div class="compare-footer">
+              <span class="compare-footer-label compare-footer-label--before">Raw context</span>
+              <div class="compare-slider-root">
+                <input
+                  type="range"
+                  id="compare-slider"
+                  class="compare-slider"
+                  min="0"
+                  max="100"
+                  value="48"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  aria-valuenow="48"
+                  aria-label="Reveal compressed packet"
+                />
+              </div>
+              <span class="compare-footer-label compare-footer-label--after">Optimized packet</span>
+            </div>
+          </div>
+
+          <div class="savings-banner reveal" role="status">
+            <p>
+              Query-level token reduction:
+              <strong><span id="savings-pct">74</span>%</strong>
+              (1,597 → 416). Corpus-level: 34,671 raw pool → ~372 tokens avg per query
+              (<strong>98.9%</strong> estimated savings, BENCHMARK §2.3).
+            </p>
+            <a
+              class="btn btn-ghost"
+              href="https://github.com/Madhan230205/token-reducer/blob/main/BENCHMARK.md"
+              target="_blank"
+              rel="noopener noreferrer"
+              >Read BENCHMARK.md</a
+            >
+          </div>
+        </div>
+      </section>
+
+      <section id="features" aria-labelledby="features-title">
+        <div class="container">
+          <p class="section-label reveal">Built for trust</p>
+          <h2 id="features-title" class="section-title reveal">
+            More than shrinking text
+          </h2>
+          <div class="features-grid">
+            <article class="feature-card reveal">
+              <h3>Hybrid explainability</h3>
+              <p>
+                One deterministic <code>context_optimization_line</code> in model context (~15
+                tokens). A 3–6 line sidecar for humans. Full spine JSON only in verbose mode —
+                no LLM “explanation” on the hot path.
+              </p>
+            </article>
+            <article class="feature-card reveal reveal-delay-1">
+              <h3>Trace bundle</h3>
+              <p>
+                Same <code>trace_id</code> links audit spine, signal snapshot, gate decision, and
+                <code>decision_trace_v2</code> — policy vs signals vs outcome stay separable.
+              </p>
+            </article>
+            <article class="feature-card reveal reveal-delay-2">
+              <h3>Subagents &amp; routing</h3>
+              <p>
+                Execution tiers (simple / tool / complex) cap cost before retrieval expands.
+                Subagent chain runs only on complex paths; tool tier picks one atomic skill.
+              </p>
+            </article>
+            <article class="feature-card reveal reveal-delay-3">
+              <h3>Disagreement handling</h3>
+              <p>
+                FTS vs vector overlap stored once in the spine; flags like
+                <code>disagreement_present</code> flow to confidence bands and the public trace —
+                deterministic, replayable.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <div class="metrics-strip" aria-label="Published benchmark metrics">
+        <div class="container metrics-strip-inner">
+          <div class="strip-metric">
+            <strong data-count-to="98.9" data-suffix="%" data-decimals="1">98.9%</strong>
+            <span>token savings</span>
+            <cite>BENCHMARK §2.3</cite>
+          </div>
+          <div class="strip-metric">
+            <strong data-count-to="5.83" data-suffix="×" data-decimals="2">5.83×</strong>
+            <span>avg compression</span>
+            <cite>5 queries</cite>
+          </div>
+          <div class="strip-metric">
+            <strong data-count-to="27.1" data-suffix=" ms" data-decimals="1">27.1 ms</strong>
+            <span>avg latency</span>
+            <cite>local index</cite>
+          </div>
+          <div class="strip-metric">
+            <strong>51</strong>
+            <span>files indexed</span>
+            <cite>96 chunks</cite>
+          </div>
+          <div class="strip-metric">
+            <strong>MIT</strong>
+            <span>license</span>
+            <cite>local-first</cite>
+          </div>
+        </div>
+      </div>
+
+      <section id="install" class="cta-band" aria-labelledby="install-title">
+        <div class="container reveal">
+          <h2 id="install-title">Install in Claude Code</h2>
+          <p>
+            Add the marketplace plugin, then run
+            <code>/token-reducer</code> with a specific query before pasting large logs. Prefer
+            <code>--json</code> for full telemetry and <code>claude_context._context_adaptation</code>.
+          </p>
+          <div class="hero-actions hero-actions--center">
+            <a
+              class="btn btn-primary"
+              href="https://github.com/Madhan230205/token-reducer"
+              target="_blank"
+              rel="noopener noreferrer"
+              >github.com/Madhan230205/token-reducer</a
+            >
+            <a class="btn btn-ghost" href="#proof">See proof again</a>
+          </div>
+          <pre class="install-snippet compare-code">python scripts/context_pipeline.py run \
+  --inputs . \
+  --query "How does authentication work?" \
+  --top-k 3 --json</pre>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer" role="contentinfo">
+      <div class="container footer-grid">
+        <div>
+          <p>
+            <strong class="footer-brand">token-reducer</strong> — Claude Code
+            plugin by Madhan230205. Positioning per
+            <em>docs/WHY_TOKEN_REDUCER.md</em>; numbers from <em>BENCHMARK.md</em> (v1.4.0).
+          </p>
+          <p class="footer-meta">MIT License · Local-first · Python 3.10+</p>
+        </div>
+        <ul class="footer-links">
+          <li>
+            <a href="https://github.com/Madhan230205/token-reducer" target="_blank" rel="noopener noreferrer">Repository</a>
+          </li>
+          <li><a href="https://github.com/Madhan230205/token-reducer/blob/main/BENCHMARK.md" target="_blank" rel="noopener noreferrer">Benchmark report</a></li>
+          <li><a href="https://github.com/Madhan230205/token-reducer/blob/main/docs/WHY_TOKEN_REDUCER.md" target="_blank" rel="noopener noreferrer">Why Token Reducer</a></li>
+          <li><a href="#proof">Before / after</a></li>
+        </ul>
+      </div>
+    </footer>
+
+    <script src="main.js"></script>
+  </body>
+</html>

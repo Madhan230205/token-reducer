@@ -24,7 +24,7 @@ def test_gate_derives_trace_id() -> None:
 
 def test_emit_decision_trace_shape() -> None:
     d = emit_decision_trace("tid-3")
-    assert d.schema_version == "decision_trace_v1"
+    assert d.schema_version == "decision_trace_v2"
     assert "→" in d.path
 
 
@@ -35,4 +35,4 @@ def test_trace_bundle_json_roundtrip_keys() -> None:
     assert js["trace_id"] == "tid-4"
     assert js["signal_snapshot_v1"]["trace_id"] == "tid-4"
     assert js["gate_decision_v1"]["trace_id"] == "tid-4"
-    assert js["decision_trace_v1"]["trace_id"] == "tid-4"
+    assert js["decision_trace_v2"]["trace_id"] == "tid-4"

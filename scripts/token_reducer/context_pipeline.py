@@ -1,29 +1,34 @@
-"""Single dominant context pipeline: intent → retrieve → rerank → subagents → compress → expand.
+"""Single dominant context pipeline: intent → multi-agent specialists → cost finalize.
 
 **Cache-miss execution MUST go through** :func:`process_prompt` (see :func:`run_retrieval_pipeline`).
-Subagents are coordinator → merge_streams → filter → ranking → variance → fusion → budget (deterministic, pre-compression).
+Top-level agents (see :mod:`token_reducer.multi_agent`): cost optimizer → retriever → reasoning
+enhancer → compressor. Chunk-level deterministic passes remain in :mod:`token_reducer.subagents`.
 """
 
 from __future__ import annotations
 
-import os
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any
 
-import sqlite3
-
 from .chunker import estimate_tokens
 from .compressor import trim_to_words
+from .execution_route import execution_route_to_dict, routing_plan_to_dict
 from .intent import StructuredIntent, detect_intent, structured_intent_to_dict
 from .models import Candidate
 from .ranking import _document_mtimes, structural_score
 from .retriever import overlap_ratio
-from .subagents.policy import effective_chunk_token_budget
 
 # Aggressive early prune before expensive rerank / structural scoring (sharp pipeline).
 EARLY_MERGE_CAP = 50
 EARLY_PRUNE_K = 15
+
+_RANK_PROFILE_BLEND: dict[str, tuple[float, float, float]] = {
+    "default": (0.6, 0.3, 0.1),
+    "semantic_heavy": (0.72, 0.22, 0.06),
+    "lexical_heavy": (0.45, 0.45, 0.10),
+}
 
 
 def early_prune_candidates(
@@ -80,6 +85,8 @@ def rerank_chunks(
     *,
     conn: sqlite3.Connection | None = None,
     top_n: int | None = None,
+    ranking_profile: str = "default",
+    ranking_weights: dict[str, float] | None = None,
 ) -> list[Candidate]:
     """Layer after lexical/vector merge: semantic + keyword + recency (+ light structural).
 
@@ -87,11 +94,27 @@ def rerank_chunks(
     ``vector_score``, ``fts_score``). ``keyword_score`` is query/chunk token overlap.
     ``recency_score`` uses document mtime when ``conn`` is provided.
 
-    Formula: ``0.6 * semantic + 0.3 * keyword + 0.1 * recency``, blended with a small
+    Blend precedence (§5.3): validated ``ranking_weights`` (keys semantic, keyword, recency),
+    else ``ranking_profile`` preset, else system default.
+
+    Formula core: ``w_s * semantic + w_k * keyword + w_r * recency``, blended with a small
     structural term so bug-fix / navigation heuristics from :mod:`ranking` still apply.
     """
     if not chunks:
         return chunks
+
+    from .context_intelligence.ranking import validate_ranking_weights
+
+    w_valid = validate_ranking_weights(ranking_weights)
+    need = {"semantic", "keyword", "recency"}
+    if w_valid is not None and need <= set(w_valid.keys()):
+        w_sem = float(w_valid["semantic"])
+        w_kw = float(w_valid["keyword"])
+        w_rec = float(w_valid["recency"])
+    else:
+        w_sem, w_kw, w_rec = _RANK_PROFILE_BLEND.get(
+            ranking_profile, _RANK_PROFILE_BLEND["default"]
+        )
 
     if isinstance(intent, dict):
         legacy = intent.get("legacy_intent", "explain_code")
@@ -133,7 +156,7 @@ def rerank_chunks(
     level_w = {"high": 1.04, "medium": 1.0, "low": 0.96}.get(compression_level, 1.0)
 
     for i, c in enumerate(chunks):
-        base = 0.6 * sem_n[i] + 0.3 * kw_n[i] + 0.1 * rec_n[i]
+        base = w_sem * sem_n[i] + w_kw * kw_n[i] + w_rec * rec_n[i]
         mix = 0.82 * base + 0.18 * struct_n[i]
         c.structural_score = float(struct_raw[i])
         c.final_score = float(mix * level_w)
@@ -209,21 +232,23 @@ def process_prompt(
     trace = runner.run_through_compression(debug=debug)
     if trace:
         dbg.update(trace)
+    dbg["execution_route"] = (
+        execution_route_to_dict(crs.execution_route) if crs.execution_route is not None else None
+    )
+    dbg["routing_plan"] = routing_plan_to_dict(crs.routing_plan) if crs.routing_plan is not None else None
     if getattr(crs, "subagent_debug", None):
         dbg["subagent_trace"] = crs.subagent_debug
     if getattr(crs, "context_strategy", None):
         dbg["context_strategy"] = crs.context_strategy
+    pd = getattr(crs, "pipeline_debug", None)
+    if isinstance(pd, dict) and "context_intelligence" in pd:
+        dbg["context_intelligence"] = pd["context_intelligence"]
 
-    structured = structured_intent_to_dict(intent)
-    model = (getattr(crs, "model_profile", None) or os.environ.get("TOKEN_REDUCER_MODEL", "sonnet")).strip()
-    out_budget = effective_chunk_token_budget(int(structured["token_budget"]), model)
-    crs.bullets = ensure_bullets_within_token_budget(crs.bullets, out_budget)
-    final_tok = _final_bullet_token_estimate(crs.bullets)
-    assert final_tok <= out_budget, f"final_tokens {final_tok} exceed budget {out_budget}"
+    fin = runner.stage_cost_finalize(prompt)
+    dbg["final_tokens"] = fin["final_tokens"]
+    dbg["output_token_budget"] = fin["output_token_budget"]
 
     bullets_txt = "\n".join(f"- {b}" for b in crs.bullets)
-    dbg["final_tokens"] = final_tok
-    dbg["output_token_budget"] = out_budget
     return {
         "context": bullets_txt,
         "intent": structured_intent_to_dict(intent),

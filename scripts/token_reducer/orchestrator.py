@@ -697,15 +697,31 @@ def build_packet_from_state(
     cs = getattr(state, "context_strategy", None) or {}
     sid = cs.get("strategy_id") if isinstance(cs, dict) else None
     sid_str = str(sid) if sid else None
-    focus = build_focus_line(
-        state.query,
-        state.intent,
-        state.selected,
-        strategy_id=sid_str,
+    legacy_explain = os.environ.get("TOKEN_REDUCER_LEGACY_PACKET_EXPLAIN", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
     )
-    trace = build_agent_trace(state)
-    trans = chunk_transparency_rows(state.selected)
+    if legacy_explain:
+        focus = build_focus_line(
+            state.query,
+            state.intent,
+            state.selected,
+            strategy_id=sid_str,
+        )
+        trace = build_agent_trace(state)
+        trans = chunk_transparency_rows(state.selected)
+    else:
+        focus = ""
+        trace = []
+        trans = []
     spine_payload = state.audit_spine.to_jsonable() if state.audit_spine is not None else None
+    decision_trace_payload: dict[str, Any] | None = None
+    cc = state.claude_context
+    if isinstance(cc, dict):
+        dt = cc.get("decision_trace")
+        if isinstance(dt, dict):
+            decision_trace_payload = dt
     return build_packet(
         query=state.query,
         selected=state.selected,
@@ -730,4 +746,5 @@ def build_packet_from_state(
         agent_trace=trace,
         chunk_transparency=trans,
         audit_spine=spine_payload,
+        decision_trace=decision_trace_payload,
     )

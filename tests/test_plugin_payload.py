@@ -55,3 +55,16 @@ def test_plugin_patch_first_adds_guidance_and_smaller_code_cap() -> None:
     assert "edit_guidance" not in plain
     assert "edit_guidance" in patchy
     assert len(str(patchy["code_context"][0]["code"])) < len(str(plain["code_context"][0]["code"]))
+
+
+def test_plugin_payload_context_adaptation_optional() -> None:
+    c = _c(1, "x.py", "def foo():\n    return 1\n")
+    minimal = build_claude_plugin_payload("q", "explain_code", [c])
+    assert "_context_adaptation" not in minimal
+    rich = build_claude_plugin_payload(
+        "q",
+        "explain_code",
+        [c],
+        adaptation_brief=["Line one.", "Line two."],
+    )
+    assert rich["_context_adaptation"] == ["Line one.", "Line two."]

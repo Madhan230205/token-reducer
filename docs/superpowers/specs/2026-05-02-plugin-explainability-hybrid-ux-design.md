@@ -86,8 +86,15 @@ Everything heavier lives here:
 ## 4. Data flow
 
 1. Pipeline completes → `audit_spine` populated (see audit spine spec).
-2. **Renderer** (new component at implementation): `spine → { payload_one_liner, sidecar_lines[], verbose_bundle }`.
-3. Plugin payload assembly: inject **only** one-liner into model context path; attach sidecar + spine pointer under stable keys (exact schema in implementation plan).
+2. **Control plane** builds **`signal_snapshot_v1`**, **`gate_decision_v1`**, **`decision_trace_v2`** from the same spine + `ContextRunState` (`emit_decision_trace` / `build_trace_bundle_from_run`). This is the **canonical** reviewer JSON.
+3. **Renderer** (hybrid UX): `spine → { payload_one_liner, sidecar_lines[], verbose_bundle }` — **projections only**; must not invent facts not derivable from spine + the same inputs used for `decision_trace_v2`.
+4. Plugin payload assembly: inject **only** one-liner into model context path; attach sidecar + spine pointer under stable keys. **`claude_context["decision_trace"]`** carries the full **`decision_trace_v2`** object (same as on-disk `decision_trace.json`). **`ContextPacket.decision_trace`** mirrors it for structured consumers.
+
+**Presentation bridge (reviewer / GTM):** Query → **DecisionTrace** (`decision_trace_v2`) → chunk refs (`selected_chunks` / paths) → model answer / compressed bullets. **`summary.txt`** in the trace directory is template-filled from bundle fields (aligned with the trace, not a second narrative).
+
+### 4.1 Legacy packet fields
+
+`focus_line`, `agent_trace`, and `chunk_transparency` on **`ContextPacket`** are **deprecated** for default packets. Set **`TOKEN_REDUCER_LEGACY_PACKET_EXPLAIN=1`** to populate them (previous behavior). The canonical trust surface is **`decision_trace`** + hybrid one-liner / sidecar.
 
 ---
 
@@ -122,3 +129,4 @@ Everything heavier lives here:
 | Rev | Notes |
 |-----|--------|
 | 0.1 | Hybrid strict: 1-line payload, 3–6 line sidecar, verbose for spine + counts; persona B-optimized. |
+| 0.2 | Align with **`decision_trace_v2`** as canonical artifact; legacy packet explain fields behind env; presentation bridge + `summary.txt` alignment. |

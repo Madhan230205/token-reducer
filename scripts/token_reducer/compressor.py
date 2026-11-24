@@ -629,6 +629,7 @@ def build_packet(
     agent_trace: list[dict[str, Any]] | None = None,
     chunk_transparency: list[dict[str, Any]] | None = None,
     audit_spine: dict[str, Any] | None = None,
+    decision_trace: dict[str, Any] | None = None,
 ) -> ContextPacket:
     source_count = len({c.source for c in selected})
     candidate_pool_tokens = sum(c.token_estimate for c in candidate_pool)
@@ -760,4 +761,5 @@ def build_packet(
         agent_trace=trace,
         chunk_transparency=trans,
         audit_spine=audit_spine,
+        decision_trace=decision_trace,
     )

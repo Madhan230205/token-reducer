@@ -1,0 +1,14 @@
+{
+  "$schema_comment": "Atomic skills — router picks by cost_estimate × latency / success_rate (lower is better).",
+  "skills": [
+    {
+      "id": "token-reducer",
+      "path": "skills/token-reducer/SKILL.md",
+      "name": "token-reducer",
+      "cost_estimate": 1.0,
+      "latency_ms": 45,
+      "success_rate": 0.92,
+      "triggers": ["token-reducer", "context packet", "retrieve context", "compress context"]
+    }
+  ]
+}

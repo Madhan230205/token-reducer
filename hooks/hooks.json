@@ -1,12 +1,12 @@
 {
-  "description": "token-reducer prompt guardrails for bypass prevention and session hygiene reminders",
+  "description": "token-reducer — single pre_processor (guardrails + hygiene); post_processor reserved",
   "hooks": {
     "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/userprompt_guard.py",
+            "command": "python ${CLAUDE_PLUGIN_ROOT}/hooks/pre_processor.py",
             "timeout": 12
           }
         ]

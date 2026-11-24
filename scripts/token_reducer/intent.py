@@ -66,6 +66,18 @@ def analyze_query_intent(query: str) -> IntentType:
     return best
 
 
+def intent_score_map(query: str) -> dict[IntentType, int]:
+    """Raw per-intent match counts (for confidence / spread)."""
+    q = (query or "").strip()
+    return {
+        "bug_fix": len(_BUG.findall(q)),
+        "feature_add": len(_FEATURE.findall(q)),
+        "explain_code": len(_EXPLAIN.findall(q)),
+        "refactor": len(_REFACTOR.findall(q)),
+        "navigation": len(_NAV.findall(q)),
+    }
+
+
 def _structured_for_legacy(legacy: IntentType) -> tuple[StructuredIntentType, int, int, CompressionLevel]:
     """Map legacy intent to (coarse type, retrieval k, token_budget, compression_level)."""
     if legacy in ("bug_fix", "feature_add", "refactor", "navigation"):

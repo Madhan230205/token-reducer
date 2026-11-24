@@ -14,7 +14,7 @@
 
 **What is strong today:** local-first retrieval + compression, published benchmark numbers on a real corpus, and the start of a **credible trust surface** (spine + hybrid explainability + typed TraceBundle skeleton).
 
-**What is still in flight:** wiring the control plane so **every** stage consults a single **gate** (no scattered heuristics), and making **decision_trace_v1** the default **star artifact** in docs, harness output, and plugin UX.
+**What is still in flight:** wiring the control plane so **every** stage consults a single **gate** (no scattered heuristics), and making **decision_trace_v2** the default **star artifact** in docs, harness output, and plugin UX.
 
 **What this doc is not:** a claim that shipping is “finished.” It is a **positioning** anchor: if you are comparing tools, these three properties are the bar Token Reducer is building toward.
 

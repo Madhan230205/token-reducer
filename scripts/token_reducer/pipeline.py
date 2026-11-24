@@ -15,6 +15,7 @@ from .adaptive_feedback.state_store import load_staging
 from .audit_spine import apply_outcome, bootstrap_spine
 from .config import DEFAULT_RELEVANCE_FLOOR, MAX_QUERY_LINES, MAX_QUERY_WORDS
 from .context_pipeline import process_prompt
+from .control_plane.compute import build_trace_bundle_from_run
 from .db import (
     cleanup_query_cache,
     get_cached_query_result,
@@ -45,6 +46,7 @@ from .orchestrator import ContextRunState, build_packet_from_state
 from .patch_loop import run_closed_edit_loop
 from .plugin_settings import get_runtime_defaults
 from .product_defaults import apply_plugin_product_defaults
+from .trace_export import write_trace_bundle_dir
 
 
 def validate_query_input(query: str) -> tuple[bool, str | None]:
@@ -83,6 +85,7 @@ def run_retrieval_pipeline(
     workspace_root: Path | None = None,
     closed_edit_loop: bool = False,
     agent_apply_patches: bool = False,
+    trace_dir: Path | None = None,
 ) -> ContextPacket:
     apply_plugin_product_defaults(db_path=db_path, session_id=session_id)
     runtime = get_runtime_defaults()
@@ -100,6 +103,11 @@ def run_retrieval_pipeline(
     fb_adj = feedback_loop_adjustments_with_adaptive(workspace_root=workspace_root)
 
     index_fingerprint = get_index_fingerprint(conn)
+    trace_root_raw = trace_dir
+    if trace_root_raw is None:
+        env_td = os.environ.get("TOKEN_REDUCER_TRACE_DIR", "").strip()
+        trace_root_raw = Path(env_td) if env_td else None
+
     cache_key_material = json.dumps(
         {
             "query": query,
@@ -205,6 +213,28 @@ def run_retrieval_pipeline(
             disagreement=state.audit_spine.retrieval.disagreement,
         )
     attach_hybrid_explainability_to_context(state)
+    trace_bundle = None
+    if state.audit_spine is not None:
+        trace_bundle = build_trace_bundle_from_run(state, cache_used=False)
+        if (
+            trace_bundle
+            and trace_bundle.decision_trace
+            and isinstance(state.claude_context, dict)
+        ):
+            state.claude_context["decision_trace"] = trace_bundle.decision_trace.to_jsonable()
+    if trace_root_raw is not None and state.audit_spine is not None and trace_bundle is not None:
+        inputs_digest = {
+            "query_sha256": hash_text(query),
+            "db_path": str(db_path.resolve()),
+            "index_fingerprint": index_fingerprint,
+            "session_id": session_id,
+        }
+        write_trace_bundle_dir(
+            trace_root_raw,
+            state.audit_spine,
+            trace_bundle,
+            inputs_digest=inputs_digest,
+        )
     if (
         closed_edit_loop
         and workspace_root is not None

@@ -18,6 +18,8 @@ def build_claude_plugin_payload(
     *,
     patch_first: bool = False,
     context_strategy: dict[str, object] | None = None,
+    routing_debug: dict[str, object] | None = None,
+    adaptation_brief: list[str] | None = None,
 ) -> dict[str, object]:
     summary, relationships = summarize_context(query, intent, candidates)
     files = sorted({c.source for c in candidates})
@@ -58,6 +60,10 @@ def build_claude_plugin_payload(
         "relationships": relationships,
         "code_context": code_context,
     }
+    if routing_debug:
+        payload["_routing_debug"] = routing_debug
+    if adaptation_brief:
+        payload["_context_adaptation"] = adaptation_brief
     if patch_first:
         payload["edit_guidance"] = (
             "Plan edits before writing code; prefer SEARCH/REPLACE or small targeted hunks; "

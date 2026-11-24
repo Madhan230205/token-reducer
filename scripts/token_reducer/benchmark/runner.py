@@ -15,7 +15,9 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from token_reducer.audit_spine import apply_outcome, bootstrap_spine
 from token_reducer.chunker import estimate_tokens
+from token_reducer.control_plane.compute import build_trace_bundle_from_run
 from token_reducer.db import connect_db, upsert_document
 from token_reducer.execution_route import build_routing_plan, resolve_execution_route
 from token_reducer.intent import analyze_query_intent, detect_intent, structured_intent_to_dict
@@ -151,22 +153,17 @@ def _recall_at_k(expected: list[str], hits: int) -> float:
     return max(0.0, min(1.0, hits / len(expected)))
 
 
-def build_decision_trace(state: ContextRunState) -> dict[str, Any]:
-    route = state.execution_route
-    tier = route.tier if route is not None else "complex"
-    skill: str | None = None
-    if route is not None and route.tier == "tool":
-        skill = route.skill_id
-    sub_meta = state.subagent_debug if isinstance(state.subagent_debug, dict) else {}
-    ran = sub_meta.get("subagents")
-    subagents_used = list(ran) if isinstance(ran, list) else []
-    compression_triggered = bool(state.bullets)
-    return {
-        "tier": tier,
-        "skill_selected": skill,
-        "subagents_used": subagents_used,
-        "compression_triggered": compression_triggered,
-    }
+def build_decision_trace_payload(state: ContextRunState) -> dict[str, Any]:
+    """``decision_trace_v2`` projection for benchmark rows (single artifact)."""
+    bundle = build_trace_bundle_from_run(state, cache_used=False)
+    if bundle is None or bundle.decision_trace is None:
+        return {}
+    return bundle.decision_trace.to_jsonable()
+
+
+def build_trace_bundle_payload(state: ContextRunState) -> dict[str, Any] | None:
+    bundle = build_trace_bundle_from_run(state, cache_used=False)
+    return bundle.to_jsonable() if bundle else None
 
 
 @contextlib.contextmanager
@@ -239,6 +236,7 @@ def run_scenario(
         "tokens": {},
         "retrieval": {},
         "decision_trace": {},
+        "trace_bundle": None,
         "deterministic": {},
         "regression_flags": {"baseline_loaded": False},
     }
@@ -275,6 +273,7 @@ def run_scenario(
                 workspace_root=fixture_path,
                 execution_route=route,
                 routing_plan=plan,
+                audit_spine=bootstrap_spine(scenario.query, si, route),
             )
             orch = ContextPipelineOrchestrator(state)
 
@@ -297,6 +296,14 @@ def run_scenario(
 
             timings_ms["total_ms"] = round((time.perf_counter() - t_wall0) * 1000, 3)
 
+            if state.audit_spine is not None:
+                state.audit_spine = apply_outcome(
+                    state.audit_spine,
+                    latency_ms=int(timings_ms["total_ms"]),
+                    context_decision=state.context_decision,
+                    disagreement=state.audit_spine.retrieval.disagreement,
+                )
+
             selected_sources = [c.source for c in state.selected]
             ok_paths, missing = _paths_hit(fixture_path, selected_sources, scenario.expected_paths)
             hits = len(scenario.expected_paths) - len(missing)
@@ -314,7 +321,8 @@ def run_scenario(
                 "vector_retrieval_path": state.vector_retrieval_path,
                 "scored_pool_size": len(state.scored_pool),
             }
-            row["decision_trace"] = build_decision_trace(state)
+            row["decision_trace"] = build_decision_trace_payload(state)
+            row["trace_bundle"] = build_trace_bundle_payload(state)
             row["deterministic"] = {
                 "pass": ok_paths,
                 "missing_expected_paths": missing,
