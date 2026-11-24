@@ -54,3 +54,19 @@ def test_intent_rerank_orders_bug_fix_toward_errors(db: sqlite3.Connection) -> N
     out = apply_claude_intent_rerank(db, [c_plain, c_err], "fix error in foo", "bug_fix")
     by_id = {c.chunk_id: c for c in out}
     assert by_id[c_err.chunk_id].structural_score > by_id[c_plain.chunk_id].structural_score
+
+
+def test_rrf_scores_are_normalised_to_unit_top() -> None:
+    from token_reducer.retriever import reciprocal_rank_fusion
+
+    def cand(cid: int) -> Candidate:
+        return Candidate(
+            chunk_id=cid, source=f"{cid}.py", chunk_index=0, text="t", token_estimate=1
+        )
+
+    ranked = reciprocal_rank_fusion([cand(1), cand(2), cand(3)], [cand(2), cand(4)])
+    assert ranked[0].chunk_id == 2  # appears in both lists
+    assert ranked[0].final_score == pytest.approx(1.0)
+    assert all(0.0 < c.final_score <= 1.0 for c in ranked)
+    # a 0.15-0.18 relevance floor must not wipe out the single-list candidates
+    assert sum(c.final_score >= 0.18 for c in ranked) == len(ranked)

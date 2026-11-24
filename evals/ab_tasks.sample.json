@@ -1,0 +1,32 @@
+[
+  {
+    "id": "find-rrf",
+    "prompt": "In this repo, which function implements reciprocal rank fusion and what file is it in? Answer with the function name and file path only.",
+    "expect": ["reciprocal_rank_fusion", "retriever.py"]
+  },
+  {
+    "id": "fts-query-builder",
+    "prompt": "How does this project turn a user query into an SQLite FTS5 MATCH expression? Name the function and the operator it joins terms with.",
+    "expect": ["build_fts_query", "OR"]
+  },
+  {
+    "id": "incremental-sync",
+    "prompt": "Explain briefly how incremental re-indexing detects new, modified and deleted files. Name the function that does the detection.",
+    "expect": ["detect_file_changes"]
+  },
+  {
+    "id": "prompt-guard-limits",
+    "prompt": "What word-count limit causes the UserPromptSubmit hook to reject a prompt outright, and which constant holds it?",
+    "expect": ["3000", "HARD_BLOCK_WORDS"]
+  },
+  {
+    "id": "ast-chunking-fallback",
+    "prompt": "When tree-sitter AST chunking is unavailable for a source file, what does chunk_code fall back to? Name the fallback steps.",
+    "expect": ["regex", "chunk_text"]
+  },
+  {
+    "id": "mcp-db-location",
+    "prompt": "Where does the token-reducer MCP server store its SQLite index for a workspace, and which env var overrides it?",
+    "expect": [".cache", "TOKEN_REDUCER_DB"]
+  }
+]

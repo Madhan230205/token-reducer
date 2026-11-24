@@ -355,3 +355,50 @@ class TestCollectInputFiles:
         files = collect_input_files([str(f)])
         assert len(files) == 1
         assert files[0].name == "solo.py"
+
+
+class TestCodeCleaningAndCoverage:
+    REAL_MODULE = Path(__file__).parent.parent / "scripts" / "token_reducer" / "retriever.py"
+
+    def test_clean_source_keeps_indentation_and_repeated_lines(self) -> None:
+        from token_reducer.chunker import clean_source
+
+        code = "def a():\n    return 1\n\n\n\ndef b():\n    return 1\n"
+        cleaned = clean_source(code, "x.py")
+        assert "    return 1\n" in cleaned
+        assert cleaned.count("return 1") == 2
+        assert "\n\n\n" not in cleaned
+
+    def test_clean_source_uses_prose_cleaner_for_docs(self) -> None:
+        from token_reducer.chunker import clean_source
+
+        assert clean_source("hello\n\n\nhello", "x.md") == "hello"
+
+    def test_real_module_chunks_cover_whole_file(self) -> None:
+        from token_reducer.chunker import clean_source
+
+        raw = read_text_file(self.REAL_MODULE)
+        assert raw
+        cleaned = clean_source(raw, str(self.REAL_MODULE))
+        chunks = chunk_code(cleaned, str(self.REAL_MODULE), chunk_size_words=100)
+        covered = sum(len(c.split()) for c in chunks)
+        assert len(chunks) >= 8
+        assert covered >= 0.95 * len(cleaned.split())
+        assert "import" in chunks[0]  # module preamble kept, not dropped
+
+    def test_no_tiny_standalone_chunks(self) -> None:
+        code = (
+            "import os\n\n"
+            + "\n\n".join(f"def f{i}():\n    return {i}\n" for i in range(12))
+            + "\nresult = 1\n"
+        )
+        chunks = chunk_code(code, "t.py", chunk_size_words=MIN_CHUNK_WORDS)
+        assert all(len(c.split()) >= 4 for c in chunks)
+        assert "result = 1" in "\n".join(chunks)
+
+    def test_unicode_tokens_do_not_crash_ngrams(self) -> None:
+        from token_reducer.chunker import tokenize
+
+        assert tokenize("café naïve 日本 Foo_1") == ["caf", "na", "ve", "foo_1"]
+        for tok in ("日本x", "é", "naïve"):
+            assert char_ngrams(tok)

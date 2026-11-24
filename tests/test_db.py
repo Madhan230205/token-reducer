@@ -314,3 +314,41 @@ class TestUpsertDocument:
         chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         assert embedding_count == chunk_count
         conn.close()
+
+
+class TestFtsMigration:
+    def test_old_fts_layout_is_upgraded_and_rebuilt(self, tmp_path: Path) -> None:
+        db = tmp_path / "old.db"
+        raw = sqlite3.connect(db)
+        raw.executescript(
+            """
+            CREATE TABLE documents (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL UNIQUE,
+                raw_text TEXT NOT NULL, cleaned_text TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+            CREATE TABLE chunks (id INTEGER PRIMARY KEY AUTOINCREMENT, document_id INTEGER NOT NULL,
+                chunk_index INTEGER NOT NULL, text TEXT NOT NULL, token_estimate INTEGER NOT NULL,
+                UNIQUE(document_id, chunk_index));
+            CREATE VIRTUAL TABLE chunks_fts USING fts5(text, content='chunks', content_rowid='id');
+            INSERT INTO documents VALUES (1, '/repo/hooks/prompt_guard.py', 'x', 'x', 't', 't');
+            INSERT INTO chunks VALUES (1, 1, 0, 'if word_count > HARD_BLOCK_WORDS: reject the prompt', 10);
+            INSERT INTO chunks_fts(rowid, text) VALUES (1, 'if word_count > HARD_BLOCK_WORDS: reject the prompt');
+            """
+        )
+        raw.commit()
+        raw.close()
+
+        conn = connect_db(db)
+        ddl = conn.execute("SELECT sql FROM sqlite_master WHERE name='chunks_fts'").fetchone()[0]
+        assert "porter" in ddl and "path" in ddl
+        assert (
+            conn.execute("SELECT path FROM chunks WHERE id=1").fetchone()[0]
+            == "/repo/hooks/prompt_guard.py"
+        )
+        # stemming: 'blocks' matches 'BLOCK'; path tokens are searchable
+        assert conn.execute(
+            "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH '\"blocks\"'"
+        ).fetchall()
+        assert conn.execute(
+            "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'path:hooks'"
+        ).fetchall()
+        # idempotent
+        connect_db(db).close()

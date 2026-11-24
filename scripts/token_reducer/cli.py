@@ -16,6 +16,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from .ann import build_hnsw_index, infer_embedding_dimensions
 from .chunker import (
+    clean_source,
     clean_text,
     collect_input_files,
     estimate_tokens,
@@ -65,7 +66,29 @@ app = typer.Typer(
 )
 from .benchmark.cli import bench_app  # noqa: E402
 
+trace_app = typer.Typer(no_args_is_help=True, help="Decision trace bundle utilities.")
+
+
+@trace_app.command("replay")
+def trace_replay_cmd(
+    trace_dir: Annotated[Path, typer.Argument(help="Directory containing manifest.json.")],
+    gate_patch: Annotated[
+        str | None,
+        typer.Option(
+            "--gate-patch",
+            help='JSON object merged onto gate_decision.json, e.g. {"allow_vector": false}',
+        ),
+    ] = None,
+) -> None:
+    """Validate an on-disk trace directory and optionally diff a patched gate_decision."""
+    from .trace_replay import summarize_replay
+
+    summary = summarize_replay(trace_dir, gate_patch_json=gate_patch)
+    typer.echo(json.dumps(summary, indent=2, ensure_ascii=False))
+
+
 app.add_typer(bench_app, name="proof-harness")
+app.add_typer(trace_app, name="trace")
 
 err = Console(stderr=True)
 
@@ -96,7 +119,13 @@ RelevanceFloorOpt = Annotated[
 ]
 ModeOpt = Annotated[str, typer.Option("--mode", help="compact | deep-debug")]
 JsonOpt = Annotated[bool, typer.Option("--json", help="Output full JSON result.")]
-
+TraceDirOpt = Annotated[
+    Path | None,
+    typer.Option(
+        "--trace-dir",
+        help="Write trace bundle under <dir>/<trace_id>/ (or env TOKEN_REDUCER_TRACE_DIR).",
+    ),
+]
 
 # ---------------------------------------------------------------------------
 # Commands
@@ -183,6 +212,7 @@ def query(
     word_budget: WordBudgetOpt = _RUNTIME.compression_word_budget,
     relevance_floor: RelevanceFloorOpt = _RUNTIME.relevance_floor,
     output_json: JsonOpt = False,
+    trace_dir: TraceDirOpt = None,
 ) -> None:
     """Retrieve and compress context from an existing index."""
     db_path = Path(db).expanduser().resolve()
@@ -214,6 +244,7 @@ def query(
             dimensions=dimensions,
             word_budget=word_budget,
             relevance_floor=relevance_floor,
+            trace_dir=trace_dir,
         )
 
         typer.echo(json.dumps(result.model_dump(), indent=2) if output_json else result.packet)
@@ -244,6 +275,7 @@ def run(
     word_budget: WordBudgetOpt = _RUNTIME.compression_word_budget,
     relevance_floor: RelevanceFloorOpt = _RUNTIME.relevance_floor,
     output_json: JsonOpt = False,
+    trace_dir: TraceDirOpt = None,
 ) -> None:
     """End-to-end: optionally index files, then retrieve and compress."""
     db_path = Path(db).expanduser().resolve()
@@ -313,6 +345,7 @@ def run(
             dimensions=dimensions,
             word_budget=word_budget,
             relevance_floor=relevance_floor,
+            trace_dir=trace_dir,
         )
 
         typer.echo(json.dumps(result.model_dump(), indent=2) if output_json else result.packet)
@@ -332,6 +365,7 @@ def compress_raw(
     fts_k: FtsKOpt = 12,
     word_budget: WordBudgetOpt = 500,
     relevance_floor: RelevanceFloorOpt = _RUNTIME.relevance_floor,
+    trace_dir: TraceDirOpt = None,
 ) -> None:
     """Zero-Turn compression: read raw text from stdin and output a context packet.
 
@@ -378,6 +412,7 @@ def compress_raw(
             dimensions=dimensions,
             word_budget=word_budget,
             relevance_floor=relevance_floor,
+            trace_dir=trace_dir,
         )
 
         typer.echo(result.packet)
@@ -935,7 +970,7 @@ def sync(
 
                 for path in files_to_index:
                     raw = path.read_text(encoding="utf-8", errors="replace")
-                    cleaned = clean_text(raw)
+                    cleaned = clean_source(raw, str(path))
                     if not cleaned:
                         continue
 

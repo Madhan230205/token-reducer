@@ -1,9 +1,9 @@
 {
-  "context7": {
-    "command": "npx",
-    "args": ["-y", "@upstash/context7-mcp"],
+  "token-reducer": {
+    "command": "python",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/token_reducer_mcp.py"],
     "env": {
-      "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}"
+      "TOKEN_REDUCER_EMBEDDING_BACKEND": "onnx"
     }
   }
 }

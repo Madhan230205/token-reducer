@@ -1,9 +1,9 @@
 ---
 name: token-reducer
-description: Use this skill whenever the user needs to reduce context bloat, lower token usage, summarize large code/docs corpora, run FTS plus embeddings retrieval, rerank top chunks, and produce compact context packets before implementation work. Also trigger when users say context is too long, reduce tokens, optimize prompt size, retrieve top chunks, compress context, or ask for cost-saving prompt workflows.
+description: Use this skill whenever you need to find where something lives in the codebase, or the user needs to reduce context bloat, lower token usage, summarize large code/docs corpora, run FTS plus embeddings retrieval, rerank top chunks, and produce compact context packets before implementation work. Also trigger when users say context is too long, reduce tokens, optimize prompt size, retrieve top chunks, compress context, or ask for cost-saving prompt workflows.
 license: MIT
-compatibility: Python 3.10+ with SQLite FTS5. Fully local and free by default. Context7 MCP is optional.
-allowed-tools: [Read, Glob, Grep, Bash, Task]
+compatibility: Python 3.11+ with SQLite FTS5. Fully local and free by default. Ships an MCP server (search_code, get_context, find_symbol, read_file_slice).
+allowed-tools: [Read, Glob, Grep, Bash, Task, mcp__plugin_claude-token-reducer_token-reducer, mcp__token-reducer]
 metadata:
   author: Madhan230205
   version: "1.0.0"
@@ -23,15 +23,15 @@ Claude Code often answers code questions with native **Read** / **Grep** on whol
 
 ## Workflow (prefer this order)
 
-1. **Do not paste large code or logs into chat** — that bypasses reduction and burns tokens.
-2. **Run the slash command first** so the pipeline runs before reasoning, for example: use `/token-reducer` with a short objective and paths (defaults come from plugin `settings.json`: small chunks, low `--top-k`, word budget, `relevanceFloor`).
-3. **CLI (same pipeline)** when you want a packet on disk or in a script:
+1. **Locate with MCP first.** Before `Read`-ing whole files or broad `Grep`s, call the token-reducer MCP tool `search_code` (full name `mcp__plugin_claude-token-reducer_token-reducer__search_code` when installed as a plugin) with a specific query (what the code *does*, plus any identifiers you know). It returns the few most relevant chunks with file + symbol. Use `find_symbol` for an exact identifier.
+2. **Read narrowly.** Once you know the file, use `read_file_slice(path, start, end)` for the lines you need instead of the whole file. Fall back to native `Read` only when you truly need the full file (e.g. you are about to edit it).
+3. **Brief for bigger tasks.** `get_context(task)` returns a compressed brief (summary, relevant files, relationships, trimmed code) — good as the first step of a refactor or bug hunt.
+4. **Do not paste large code or logs into chat** — that bypasses retrieval and burns tokens. Point at paths instead.
+5. **CLI fallback** (same engine, when MCP is unavailable):
 
-   `python "${CLAUDE_PLUGIN_ROOT}/scripts/context_pipeline.py" run --inputs ./src --query "Locate JWT validation" --top-k 3`
+   `python "${CLAUDE_PLUGIN_ROOT}/scripts/context_pipeline.py" run --inputs ./src --query "Locate JWT validation" --top-k 3 --json`
 
-   Use a **specific query** (not “auth stuff”) so low-scoring chunks are dropped by the **relevance floor** before summarization.
-
-4. **Session hygiene**: around **10** turns the hook suggests `/compact`; by **40–50** turns start a **new chat** for coding after planning.
+6. **Session hygiene**: around **10** turns the hook suggests `/compact`; by **40–50** turns start a new chat for coding after planning.
 
 ## Pipeline (what the tool does)
 
@@ -46,7 +46,7 @@ Claude Code often answers code questions with native **Read** / **Grep** on whol
 
 - End-to-end run (defaults from plugin `settings.json`; override flags as needed):
 
-  `python "${CLAUDE_PLUGIN_ROOT}/scripts/context_pipeline.py" run --inputs . --query "${ARGUMENTS}" --hybrid-mode fallback --top-k 3`
+  `python "${CLAUDE_PLUGIN_ROOT}/scripts/context_pipeline.py" run --inputs . --query "${ARGUMENTS}" --hybrid-mode fallback --top-k 3 --json`
 
 - Self-test:
 
@@ -60,6 +60,10 @@ Claude Code often answers code questions with native **Read** / **Grep** on whol
 - **`relevanceFloor`** — higher values drop more weak chunks before summarization (e.g. 0.18).
 
 Session reminders: top-level **`promptGuard`** (`autoCompactTurn`, `autoResetTurn`, `criticalResetTurn`, `reminderTurns`) plus `historyCompactReminderTurns` inside `tokenReducer`.
+
+## Decision trace (reviewer / replay path)
+
+The pipeline emits a **single canonical JSON** — **`decision_trace_v2`** — from the same spine + run state as hybrid explainability. It appears as **`claude_context.decision_trace`** and **`ContextPacket.decision_trace`** (and on disk under `--trace-dir` / `TOKEN_REDUCER_TRACE_DIR` as `decision_trace.json`). **Flow:** query → decision trace → chunk refs (`selected_chunks`) → compressed bullets / model answer. **`summary.txt`** next to the trace is a deterministic template (no LLM). For the previous `focus_line` / `agent_trace` / `chunk_transparency` packet fields, set **`TOKEN_REDUCER_LEGACY_PACKET_EXPLAIN=1`**.
 
 ## Deep References
 

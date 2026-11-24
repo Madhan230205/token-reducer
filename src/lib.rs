@@ -16,10 +16,8 @@ fn tokenize(text: &str) -> PyResult<Vec<String>> {
     let mut current = String::new();
 
     for c in text.chars() {
-        if c.is_alphanumeric() || c == '_' {
-            for lc in c.to_lowercase() {
-                current.push(lc);
-            }
+        if c.is_ascii_alphanumeric() || c == '_' {
+            current.push(c.to_ascii_lowercase());
         } else if !current.is_empty() {
             tokens.push(current.clone());
             current.clear();
@@ -39,22 +37,16 @@ fn tokenize(text: &str) -> PyResult<Vec<String>> {
 #[pyfunction]
 #[pyo3(signature = (token, n=3))]
 fn char_ngrams(token: &str, n: usize) -> PyResult<Vec<String>> {
-    // All tokens from `tokenize` are ASCII, so bytes == chars here.
     let padded = format!("^{}$", token);
-    let bytes = padded.as_bytes();
+    let chars: Vec<char> = padded.chars().collect();
 
-    if bytes.len() < n {
+    if chars.len() < n {
         return Ok(vec![padded]);
     }
 
-    let grams: Vec<String> = (0..=(bytes.len() - n))
-        .map(|i| {
-            // SAFETY: padded contains only ASCII (token is [a-z0-9_], ^ and $ are ASCII)
-            std::str::from_utf8(&bytes[i..i + n]).unwrap().to_string()
-        })
-        .collect();
-
-    Ok(grams)
+    Ok((0..=(chars.len() - n))
+        .map(|i| chars[i..i + n].iter().collect())
+        .collect())
 }
 
 /// Split text into overlapping word-count-bounded chunks.
@@ -110,11 +102,42 @@ fn chunk_text(text: &str, chunk_size_words: usize, overlap_words: usize) -> PyRe
     Ok(chunks)
 }
 
+/// Collapse runs of blank lines to a single blank line (context trimming).
+#[pyfunction]
+fn collapse_blank_lines(text: &str) -> PyResult<String> {
+    let mut out: Vec<&str> = Vec::new();
+    let mut prev_blank = false;
+    for line in text.lines() {
+        let blank = line.trim().is_empty();
+        if blank && prev_blank {
+            continue;
+        }
+        prev_blank = blank;
+        out.push(line);
+    }
+    Ok(out.join("\n"))
+}
+
+/// Hard cap word count for cheap trimming paths (matches compressor semantics loosely).
+#[pyfunction]
+fn trim_to_max_words(text: &str, max_words: usize) -> PyResult<String> {
+    if max_words == 0 {
+        return Ok(String::new());
+    }
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() <= max_words {
+        return Ok(text.to_string());
+    }
+    Ok(words[..max_words].join(" "))
+}
+
 #[pymodule]
 fn token_reducer_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(estimate_tokens, m)?)?;
     m.add_function(wrap_pyfunction!(tokenize, m)?)?;
     m.add_function(wrap_pyfunction!(char_ngrams, m)?)?;
     m.add_function(wrap_pyfunction!(chunk_text, m)?)?;
+    m.add_function(wrap_pyfunction!(collapse_blank_lines, m)?)?;
+    m.add_function(wrap_pyfunction!(trim_to_max_words, m)?)?;
     Ok(())
 }

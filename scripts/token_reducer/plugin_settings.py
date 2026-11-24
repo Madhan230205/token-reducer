@@ -126,6 +126,8 @@ def get_runtime_defaults() -> TokenReducerRuntimeConfig:
             shadow_timeouts[key.lower()] = iv
 
     lsp_servers: dict[str, list[str]] = {k.lower(): list(v) for k, v in DEFAULT_LSP_SERVERS.items()}
+    if os.environ.get("TOKEN_REDUCER_DISABLE_LSP", "").strip().lower() in {"1", "true", "yes"}:
+        lsp_servers = {}
     raw_lsp = raw.get("lspServers")
     if isinstance(raw_lsp, dict):
         for k, v in raw_lsp.items():

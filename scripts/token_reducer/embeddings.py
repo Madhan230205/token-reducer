@@ -135,6 +135,41 @@ def get_onnx_session(model_path: str):
     return session, tokenizer
 
 
+def embed_texts_onnx(
+    texts: Sequence[str], model_path: str, max_length: int = DEFAULT_ONNX_MAX_LENGTH
+) -> list[list[float]]:
+    """Batched ONNX embedding; pads only to the longest item in the batch (not max_length)."""
+    import numpy as np
+
+    if not texts:
+        return []
+    session, tokenizer = get_onnx_session(model_path)
+    encodings = tokenizer.encode_batch(list(texts))
+    lengths = [min(len(e.ids), max_length) for e in encodings]
+    width = max(1, max(lengths))
+
+    ids = np.zeros((len(texts), width), dtype=np.int64)
+    mask = np.zeros((len(texts), width), dtype=np.int64)
+    type_ids = np.zeros((len(texts), width), dtype=np.int64)
+    for i, (enc, n) in enumerate(zip(encodings, lengths, strict=True)):
+        ids[i, :n] = enc.ids[:n]
+        mask[i, :n] = 1
+        if enc.type_ids:
+            type_ids[i, :n] = enc.type_ids[:n]
+
+    input_names = {inp.name for inp in session.get_inputs()}
+    ort_inputs: dict[str, object] = {"input_ids": ids, "attention_mask": mask}
+    if "token_type_ids" in input_names:
+        ort_inputs["token_type_ids"] = type_ids
+
+    hidden = session.run(None, ort_inputs)[0]  # (batch, width, dim)
+    fmask = mask.astype(np.float32)[:, :, np.newaxis]
+    pooled = (hidden * fmask).sum(axis=1) / (fmask.sum(axis=1) + 1e-9)
+    norms = np.linalg.norm(pooled, axis=1, keepdims=True)
+    pooled = pooled / np.where(norms > 0, norms, 1.0)
+    return [[float(x) for x in row] for row in pooled]
+
+
 def embed_text_onnx(
     text: str, model_path: str, max_length: int = DEFAULT_ONNX_MAX_LENGTH
 ) -> list[float]:

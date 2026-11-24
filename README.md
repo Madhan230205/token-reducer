@@ -2,7 +2,7 @@
 
 # Token Reducer
 
-### Cut Claude API costs by 90%+ with intelligent context compression
+### Local code search for Claude Code — hand the model the right 3 chunks instead of 30 whole files
 
 [![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-blueviolet?style=for-the-badge&logo=anthropic)](https://claude.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge)](LICENSE)
@@ -10,9 +10,9 @@
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![SQLite](https://img.shields.io/badge/SQLite-FTS5-003B57?style=for-the-badge&logo=sqlite)](https://sqlite.org)
 
-**The open-source alternative to expensive context management tools.**
+**Hybrid BM25 + embedding search over your repo, exposed as MCP tools Claude calls on demand. 100% local.**
 
-[Easy Install](#-easy-install) • [Features](#-features) • [Documentation](#-documentation) • [Contributing](#-contributing)
+[Install](#easy-install) • [MCP tools](#mcp-tools) • [Measure it](#measure-it-on-your-repo) • [Features](#features) • [Contributing](#contributing)
 
 </div>
 
@@ -20,34 +20,25 @@
 
 ## The Problem
 
-Every time you use Claude with a large codebase, you're paying for **thousands of tokens** that aren't relevant to your query. Most context management tools either:
-
-- Send everything (expensive)
-- Truncate blindly (loses important context)
-- Require heavy Language Servers (slow, resource-intensive)
+Claude Code explores a codebase with `Read` and `Grep`. Every whole-file read drops thousands of tokens into context, and most of them are misses while the model hunts for the right place. On a mid-sized repo that hunt is the bulk of what you pay for.
 
 ## The Solution
 
-**Token Reducer** is a local-first, intelligent context compression pipeline that:
+Token Reducer runs a small search engine next to Claude Code and exposes it as MCP tools:
 
-- Reduces tokens by 90-98% while preserving semantic relevance
-- Runs entirely locally — no API calls, no data leaving your machine
-- Works in milliseconds — faster than Language Server alternatives
-- Understands code semantically — AST parsing, not just text matching
+- `search_code("where is the retry policy applied")` → the 3–6 most relevant chunks, with file path, symbol and score
+- `read_file_slice(path, 120, 180)` → exact line ranges instead of entire files
+- `get_context(task)` → a compressed, token-budgeted brief for a task
+- `find_symbol(name)` → every place an identifier appears
+
+Under the hood: tree-sitter AST chunking (functions/classes stay whole), SQLite FTS5 BM25 with stemming over code **and** file paths, ONNX MiniLM embeddings fused with reciprocal rank fusion, incremental re-indexing on every call. No network, no API keys, index stored under `~/.cache` — nothing is written into your repo.
 
 ```
-┌─────────────────┐     ┌───────────────┐     ┌──────────────────┐
-│  Your Codebase  │────▶│ Token Reducer │────▶│  Compressed      │
-│  (50,000 tokens)│     │   Pipeline    │     │  Context (500t)  │
-└─────────────────┘     └───────────────┘     └──────────────────┘
-                              │
-                    ┌─────────┴─────────┐
-                    │  - AST Chunking   │
-                    │  - BM25 + Vector  │
-                    │  - TextRank       │
-                    │  - Import Graph   │
-                    │  - 2-Hop Symbols  │
-                    └───────────────────┘
+┌────────────────┐   search_code()   ┌───────────────┐   3–6 chunks    ┌────────────┐
+│  Claude Code   │ ────────────────▶ │ token-reducer │ ──────────────▶ │  Claude    │
+│  (MCP client)  │ ◀──────────────── │  MCP server   │   ~400 tokens   │  answers   │
+└────────────────┘                   └───────────────┘                 └────────────┘
+                                      FTS5 BM25 + ONNX vectors, RRF, AST chunks
 ```
 
 ---
@@ -65,15 +56,15 @@ This registers the marketplace as `Madhan230205-token-reducer`.
 
 **Step 2:** Install:
 ```
-/plugin install token-reducer@Madhan230205-token-reducer
+/plugin install claude-token-reducer@Madhan230205-token-reducer
 ```
 
 For project-scoped install:
 ```
-/plugin install token-reducer@Madhan230205-token-reducer --scope project
+/plugin install claude-token-reducer@Madhan230205-token-reducer --scope project
 ```
 
-> **Already ran Step 1 before?** Just run `/plugin install token-reducer@Madhan230205-token-reducer` — no need to add the marketplace again.
+> **Already ran Step 1 before?** Just run `/plugin install claude-token-reducer@Madhan230205-token-reducer` — no need to add the marketplace again.
 
 ---
 
@@ -126,6 +117,52 @@ python scripts/context_pipeline.py run \
   --embedding-backend hash \
   --db .cache/index.db
 ```
+
+---
+
+## MCP tools
+
+The plugin registers an MCP server (`.mcp.json`) automatically. Claude Code will call these tools when they fit; the bundled skill nudges it to prefer `search_code` over blind `Read`/`Grep`.
+
+| Tool | What it returns |
+|------|-----------------|
+| `search_code(query, top_k=6)` | Ranked chunks: `path:start-end  [function name]  score` + short preview |
+| `get_context(task, top_k=3)` | JSON brief: summary, relevant files, relationships, trimmed code |
+| `find_symbol(name)` | Files + snippets where an exact identifier occurs |
+| `read_file_slice(path, start, end)` | Numbered lines for a range (end=0 → EOF) |
+| `index_status()` / `reindex()` | Index stats / force an incremental sync |
+
+First call on a repo builds the FTS index in seconds; dense vectors fill in on a background thread so search is never blocked.
+
+**Use it from any MCP client** (Cursor, Windsurf, Zed, your own agent):
+
+```json
+{
+  "mcpServers": {
+    "token-reducer": {
+      "command": "python",
+      "args": ["/path/to/token-reducer/scripts/token_reducer_mcp.py"],
+      "env": { "TOKEN_REDUCER_WORKSPACE": "/path/to/your/repo" }
+    }
+  }
+}
+```
+
+Env knobs: `TOKEN_REDUCER_WORKSPACE` (default: cwd), `TOKEN_REDUCER_DB` (default: `~/.cache/token-reducer/workspaces/<hash>/index.db`), `TOKEN_REDUCER_EMBEDDING_BACKEND` (`onnx` | `hash`).
+
+---
+
+## Measure it on your repo
+
+Compression ratios against a corpus pool (see [BENCHMARK.md](BENCHMARK.md)) are not the same as what a Claude Code session actually costs. `scripts/ab_eval.py` runs the same tasks through `claude -p` with and without the MCP server and reports real token usage, cost, turns and pass rate:
+
+```bash
+python scripts/ab_eval.py --repo /path/to/repo --tasks evals/ab_tasks.sample.json --repeats 2
+```
+
+Write 10–30 tasks for your own repo in the same JSON shape (`prompt` + `expect` substrings). If the B arm does not cut total tokens at equal pass rate, the tool is not earning its place in your setup — that is the number to trust.
+
+**First measurement (honest):** on this repo itself (190 files, Sonnet, 6 "where is X" tasks, 1 repeat — [raw rows](evals/ab_results/2026-11-24-token-reducer-repo-sonnet.json)) the MCP arm did **not** win: cost −5%, total tokens +36% (mostly cached re-reads from one or two extra turns), pass rate 6/6 vs 5/5. Grep already answers identifier-style questions on a small repo cheaply, and the MCP tool schemas add to every turn's prefix. Where this tool should pay off — large repos, vague "how does X work" questions, non-identifier queries — is exactly what the harness is for. Run it on your repo before believing any savings number, including ours.
 
 ---
 
@@ -256,7 +293,7 @@ python scripts/apply_diff.py --input response.txt --dry-run
 
 - **Storage**: SQLite with FTS5 + custom embeddings table
 - **Chunking**: Tree-sitter AST parsing with regex fallback
-- **Embeddings**: Jina Code v2 (or zero-dependency hash embeddings)
+- **Embeddings**: ONNX all-MiniLM-L6-v2 on CPU (batched; zero-dependency hash fallback)
 - **ANN Search**: HNSW via hnswlib (with FAISS fallback)
 - **Compression**: TextRank + query-relevance scoring
 
@@ -265,11 +302,14 @@ python scripts/apply_diff.py --input response.txt --dry-run
 ```text
 token-reducer/
 ├── .claude-plugin/plugin.json
-├── .mcp.json
+├── .mcp.json                 # registers the MCP server
 ├── .env.example
 ├── settings.json
 ├── requirements-optional.txt
 ├── scripts/
+│   ├── token_reducer_mcp.py  # MCP server entry
+│   ├── ab_eval.py            # A/B token-usage eval via `claude -p`
+│   └── token_reducer/        # pipeline package
 ├── hooks/
 ├── commands/
 ├── agents/

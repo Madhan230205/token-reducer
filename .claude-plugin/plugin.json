@@ -1,6 +1,6 @@
 {
   "name": "claude-token-reducer",
-  "version": "1.4.0",
+  "version": "1.6.0",
   "description": "Open-source, local-first Claude Code plugin for token reduction, context compression, and cost optimization using hybrid RAG retrieval (BM25 + vector search), reranking, AST-aware chunking, and compact context packets.",
   "author": {
     "name": "Madhan230205",

@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.6.0 - 2026-11-24
+
+### Added — MCP server, real-usage eval
+
+- **MCP server** (`scripts/token_reducer_mcp.py`, `token_reducer/mcp_server.py`): stdio server registered via `.mcp.json`, usable from Claude Code or any MCP client. Tools: `search_code`, `get_context`, `find_symbol`, `read_file_slice`, `index_status`, `reindex`. Index lives under `~/.cache/token-reducer/workspaces/<hash>/` (nothing written into the repo); file list comes from `git ls-files` so `.gitignore` is honoured; incremental sync on every call (throttled 20s).
+- **Non-blocking dense embeddings**: FTS index is ready in seconds; ONNX vectors are computed on a background thread in batches (`embed_texts_onnx`, padded to batch max rather than 512) — ~2.5× faster than the per-chunk path and never blocks a search.
+- **Search ranking**: code files boosted over prose, symbol-name matches boosted, sub-8-word fragments filtered; FTS query drops stopwords (`where is the … implemented`).
+- **A/B eval harness** (`scripts/ab_eval.py`, `evals/ab_tasks.sample.json`): runs tasks through `claude -p` with and without the MCP server and reports total tokens, cost, turns, pass rate.
+- First A/B result published in `evals/ab_results/` — on this small repo the MCP arm did not reduce tokens (cost −5%, tokens +36%, same pass rate). Documented as-is in the README.
+- Skill now steers Claude to `search_code` / `read_file_slice` before whole-file `Read` / broad `Grep`.
+- **FTS5 index upgraded**: `porter unicode61` stemming (`blocks` matches `BLOCK`) and a second indexed column with the file path (weight 2×) so "mcp server" finds `mcp_server.py`. Existing indexes migrate and rebuild automatically on open.
+- `search_code` results carry real `file:start-end` line spans so `read_file_slice` can follow precisely.
+
+### Fixed
+
+- **Code was being indexed almost empty.** `clean_text` stripped indentation and deduplicated lines before chunking, which broke Python for tree-sitter; e.g. `retriever.py` (1,500 words) was indexed as a single 14-word chunk. Code files now go through `clean_code_text` (indentation and repeats preserved) and AST chunking keeps module-level gaps (imports, constants) instead of dropping them. Coverage on real modules: 14 words → 100%.
+- **Rust `tokenize`/`char_ngrams` panicked on non-ASCII text** (accented, CJK) because tokens were byte-sliced; now ASCII-only tokens matching the Python regex, char-based n-grams.
+- Tiny AST fragments (`return x`, closing braces) are merged into neighbours instead of becoming standalone noisy chunks.
+- **RRF scores normalised** (top = 1.0). Raw reciprocal-rank values (~0.016–0.033) fell under the 0.15–0.18 relevance floor, so any run with ML/ONNX embeddings enabled compressed to *nothing*.
+- MCP server hardening found by driving it as a client: stray `print` calls can no longer corrupt the stdio JSON-RPC stream; child processes get `stdin=DEVNULL` (a `git ls-files` child inherited the MCP pipe and stalled 30 s); ONNX/tokenizer access is serialised across threads (concurrent query + batch embedding deadlocked); headless LSP lookups are off inside the server (blocking untimed reads); each `get_context` call uses a fresh pipeline session so a repeated question no longer returns "nothing matched".
+
+---
+
 ## 1.5.0 - 2026-05-02
 
 ### Added — Adaptive context, agents, transparency, learning hooks

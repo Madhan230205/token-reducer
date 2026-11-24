@@ -13,7 +13,7 @@
 ## 3) Install and verify
 
 - Install:
-  - `/plugin install token-reducer@Madhan230205-token-reducer`
+  - `/plugin install claude-token-reducer@Madhan230205-token-reducer`
 - Verify plugin is active:
   - `/plugin list`
 - Reload if needed:
@@ -27,4 +27,4 @@
 ## 5) Team rollout (optional)
 
 - Project scope install:
-  - `claude plugin install token-reducer@Madhan230205-token-reducer --scope project`
+  - `claude plugin install claude-token-reducer@Madhan230205-token-reducer --scope project`

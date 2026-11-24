@@ -10,7 +10,7 @@ from pathlib import Path
 from .chunker import (
     chunk_code,
     chunk_text,
-    clean_text,
+    clean_source,
     estimate_tokens,
     is_code_file,
     is_minified,
@@ -24,10 +24,33 @@ from .models import (
 )
 from .structure import meta_json_from_chunk
 
+FTS_DDL = (
+    "CREATE VIRTUAL TABLE chunks_fts USING fts5("
+    "text, path, content='chunks', content_rowid='id', tokenize='porter unicode61')"
+)
 
-def connect_db(db_path: Path) -> sqlite3.Connection:
+
+def _migrate_fts(conn: sqlite3.Connection) -> None:
+    """Upgrade older indexes to the stemmed, path-aware FTS layout and rebuild it."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chunks_fts'"
+    ).fetchone()
+    ddl = str(row[0]) if row else ""
+    if "porter" in ddl and "path" in ddl:
+        return
+    conn.execute(
+        "UPDATE chunks SET path = (SELECT source FROM documents WHERE id = chunks.document_id) "
+        "WHERE path IS NULL"
+    )
+    conn.execute("DROP TABLE IF EXISTS chunks_fts")
+    conn.execute(FTS_DDL)
+    conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')")
+    conn.commit()
+
+
+def connect_db(db_path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
 
@@ -59,7 +82,7 @@ def connect_db(db_path: Path) -> sqlite3.Connection:
             CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(document_id);
 
             CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
-            USING fts5(text, content='chunks', content_rowid='id');
+            USING fts5(text, path, content='chunks', content_rowid='id', tokenize='porter unicode61');
 
             CREATE TABLE IF NOT EXISTS chunk_embeddings (
                 chunk_id INTEGER PRIMARY KEY,
@@ -106,9 +129,11 @@ def connect_db(db_path: Path) -> sqlite3.Connection:
             "ALTER TABLE documents ADD COLUMN file_mtime REAL",
             "ALTER TABLE documents ADD COLUMN file_hash TEXT",
             "ALTER TABLE chunks ADD COLUMN meta_json TEXT",
+            "ALTER TABLE chunks ADD COLUMN path TEXT",
         ):
             with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute(statement)
+        _migrate_fts(conn)
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_backend_dims ON chunk_embeddings(backend, dimensions);"
@@ -354,13 +379,15 @@ def upsert_document(
         meta = meta_json_from_chunk(chunk, source)
         cursor = conn.execute(
             """
-            INSERT INTO chunks (document_id, chunk_index, text, token_estimate, meta_json)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO chunks (document_id, chunk_index, text, token_estimate, meta_json, path)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (document_id, idx, chunk, estimate_tokens(chunk), meta),
+            (document_id, idx, chunk, estimate_tokens(chunk), meta, source),
         )
         chunk_id = int(cursor.lastrowid)
-        conn.execute("INSERT INTO chunks_fts (rowid, text) VALUES (?, ?)", (chunk_id, chunk))
+        conn.execute(
+            "INSERT INTO chunks_fts (rowid, text, path) VALUES (?, ?, ?)", (chunk_id, chunk, source)
+        )
         emb, effective_backend, effective_model = embed_text(
             text=chunk,
             dimensions=dimensions,
@@ -406,7 +433,7 @@ def index_corpus(
             print(f"[skip] Minified content detected: {path.name}", file=sys.stderr)
             continue
 
-        cleaned = clean_text(raw)
+        cleaned = clean_source(raw, str(path))
         if not cleaned:
             continue
 

@@ -42,10 +42,95 @@ def infer_retrieval_tier(conn: sqlite3.Connection) -> str:
     return "full_hybrid"
 
 
+_FTS_STOPWORDS = frozenset(
+    [
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "do",
+        "does",
+        "did",
+        "how",
+        "what",
+        "where",
+        "which",
+        "who",
+        "why",
+        "when",
+        "this",
+        "that",
+        "these",
+        "those",
+        "it",
+        "its",
+        "of",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "from",
+        "by",
+        "with",
+        "and",
+        "or",
+        "not",
+        "no",
+        "as",
+        "into",
+        "i",
+        "you",
+        "we",
+        "they",
+        "me",
+        "my",
+        "our",
+        "your",
+        "their",
+        "can",
+        "could",
+        "should",
+        "would",
+        "will",
+        "may",
+        "might",
+        "must",
+        "find",
+        "show",
+        "tell",
+        "explain",
+        "locate",
+        "implemented",
+        "implement",
+        "implementation",
+        "code",
+        "file",
+        "function",
+        "where's",
+        "what's",
+        "here",
+        "there",
+        "than",
+        "then",
+        "also",
+        "just",
+        "about",
+    ]
+)
+
+
 def build_fts_query(query: str) -> str:
     from .chunker import tokenize
 
-    terms = tokenize(query)[:20]
+    all_terms = tokenize(query)[:20]
+    terms = [t for t in all_terms if t not in _FTS_STOPWORDS] or all_terms
     if not terms:
         return query.strip()
     return " OR ".join(f'"{term}"' for term in terms)
@@ -65,7 +150,7 @@ def fts_retrieve(conn: sqlite3.Connection, query: str, limit: int) -> list[Candi
                 c.chunk_index AS chunk_index,
                 c.token_estimate AS token_estimate,
                 d.source AS source,
-                bm25(chunks_fts) AS bm25_score
+                bm25(chunks_fts, 1.0, 2.0) AS bm25_score
             FROM chunks_fts
             JOIN chunks c ON c.id = chunks_fts.rowid
             JOIN documents d ON d.id = c.document_id
@@ -89,7 +174,7 @@ def fts_retrieve(conn: sqlite3.Connection, query: str, limit: int) -> list[Candi
                 c.chunk_index AS chunk_index,
                 c.token_estimate AS token_estimate,
                 d.source AS source,
-                bm25(chunks_fts) AS bm25_score
+                bm25(chunks_fts, 1.0, 2.0) AS bm25_score
             FROM chunks_fts
             JOIN chunks c ON c.id = chunks_fts.rowid
             JOIN documents d ON d.id = c.document_id
@@ -365,9 +450,11 @@ def reciprocal_rank_fusion(
         else:
             candidates[chunk_id] = candidate
 
-    # Assign final RRF scores
+    # Assign final RRF scores, normalised so the best candidate scores 1.0. Raw RRF values
+    # (~1/61 .. 2/61) sit far below the 0.15-0.18 relevance floor and would drop everything.
+    top = max(rrf_scores.values(), default=0.0) or 1.0
     for chunk_id, candidate in candidates.items():
-        candidate.final_score = rrf_scores[chunk_id]
+        candidate.final_score = rrf_scores[chunk_id] / top
 
     # Sort by RRF score descending
     ranked = sorted(candidates.values(), key=lambda c: c.final_score, reverse=True)

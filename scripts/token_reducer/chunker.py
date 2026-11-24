@@ -194,6 +194,28 @@ def clean_text(text: str) -> str:
     return "\n".join(cleaned_lines).strip()
 
 
+def clean_code_text(text: str) -> str:
+    """Whitespace-preserving cleaner for source files: keeps indentation and repeated
+    lines (which matter for parsing), only trims trailing spaces and collapses blank runs."""
+    out: list[str] = []
+    blank = 0
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        if not line.strip():
+            blank += 1
+            if blank > 1:
+                continue
+        else:
+            blank = 0
+        out.append(line)
+    return "\n".join(out).strip("\n")
+
+
+def clean_source(text: str, source: str) -> str:
+    """Pick the right cleaner for a file: code keeps structure, prose gets denoised."""
+    return clean_code_text(text) if is_code_file(source) else clean_text(text)
+
+
 def chunk_text(text: str, chunk_size_words: int, overlap_words: int) -> list[str]:
     lines = text.splitlines()
     if not lines:
@@ -237,6 +259,21 @@ def chunk_text(text: str, chunk_size_words: int, overlap_words: int) -> list[str
 
 def is_code_file(path: str) -> bool:
     return Path(path).suffix.lower() in CODE_EXTENSIONS
+
+
+MIN_SEGMENT_WORDS = 10
+
+
+def _merge_tiny_segments(segments: list[str], min_words: int = MIN_SEGMENT_WORDS) -> list[str]:
+    """Fold fragments shorter than ``min_words`` (a stray ``return x``, a closing brace)
+    into their neighbour so they never become standalone, noisy chunks."""
+    out: list[str] = []
+    for seg in segments:
+        if out and (len(seg.split()) < min_words or len(out[-1].split()) < min_words):
+            out[-1] = out[-1] + "\n" + seg
+        else:
+            out.append(seg)
+    return out
 
 
 def chunk_code(text: str, source: str, chunk_size_words: int) -> list[str]:
@@ -284,6 +321,7 @@ def chunk_code(text: str, source: str, chunk_size_words: int) -> list[str]:
         segment = "".join(lines[start:end]).strip()
         if segment:
             segments.append(segment)
+    segments = _merge_tiny_segments(segments)
 
     # Merge small segments or split oversized ones
     chunks: list[str] = []
@@ -491,23 +529,33 @@ def _extract_ast_chunks(text: str, ext: str, chunk_size_words: int) -> list[str]
     if not boundary_types:
         return None
 
+    data = text.encode("utf-8")
     try:
-        tree = parser.parse(text.encode("utf-8"))  # type: ignore
+        tree = parser.parse(data)  # type: ignore
     except Exception:
         return None
 
-    # Collect top-level semantic nodes
+    # Collect top-level semantic nodes; byte offsets index the encoded buffer, not the str.
     segments: list[str] = []
+    cursor = 0
+
+    def emit(start: int, end: int) -> None:
+        seg = data[start:end].decode("utf-8", errors="replace").strip()
+        if seg:
+            segments.append(seg)
 
     def collect_nodes(node: object, depth: int = 0) -> None:
-        """Recursively collect semantic boundary nodes."""
+        """Recursively collect semantic boundary nodes, keeping the gaps between them
+        (imports, constants, module-level statements) as their own segments."""
+        nonlocal cursor
         node_type = getattr(node, "type", "")
         if node_type in boundary_types:
-            start_byte = getattr(node, "start_byte", 0)
-            end_byte = getattr(node, "end_byte", len(text))
-            segment_text = text[start_byte:end_byte].strip()
-            if segment_text:
-                segments.append(segment_text)
+            start_byte = int(getattr(node, "start_byte", 0))
+            end_byte = int(getattr(node, "end_byte", len(data)))
+            if start_byte > cursor:
+                emit(cursor, start_byte)
+            emit(start_byte, end_byte)
+            cursor = max(cursor, end_byte)
             return  # Don't recurse into nested definitions to avoid duplication
 
         # For module/program root, recurse into children
@@ -520,9 +568,18 @@ def _extract_ast_chunks(text: str, ext: str, chunk_size_words: int) -> list[str]
         return None
 
     collect_nodes(root)
+    if cursor < len(data):
+        emit(cursor, len(data))
 
     if not segments:
         return None
+    # A parse full of errors (e.g. mangled or non-matching source) gives poor segments;
+    # let the regex chunker handle it instead.
+    if getattr(root, "has_error", False) and sum(len(s.split()) for s in segments) < 0.6 * len(
+        text.split()
+    ):
+        return None
+    segments = _merge_tiny_segments(segments)
 
     # Merge small segments or split oversized ones
     chunks: list[str] = []
@@ -737,7 +794,9 @@ try:
     tokenize = _rc.tokenize
     char_ngrams = _rc.char_ngrams
     chunk_text = _rc.chunk_text
-except ImportError:
+    collapse_blank_lines = _rc.collapse_blank_lines
+    trim_to_max_words = _rc.trim_to_max_words
+except (ImportError, AttributeError):
     pass
 
 
